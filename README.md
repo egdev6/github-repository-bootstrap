@@ -2,6 +2,7 @@
 
 <div align="center">
   <h1>GitHub Repository Bootstrap</h1>
+  <img width="3468" height="1198" alt="Sin título" src="https://github.com/user-attachments/assets/a095690f-0d24-45f2-8e3e-813e2e5fcace" />
   <p><strong>Plan repeatable GitHub repository setup before anything changes.</strong></p>
   <p>A Pi skill for repository governance: labels, milestones, repository files, issue and pull-request templates, and optional Projects v2 setup.</p>
   <p>
