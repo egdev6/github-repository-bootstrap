@@ -1,6 +1,6 @@
 {
   "name": "github-repository-bootstrap",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Reusable Pi skill for safe, repeatable GitHub repository bootstrap.",
   "private": true,
   "type": "module",
