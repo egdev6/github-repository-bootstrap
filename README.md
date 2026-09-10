@@ -107,7 +107,8 @@ Before installing, review the release source and the [skill instructions][skill]
 | A writable local Git working tree | The executor validates the local target before planning or applying. |
 | An `origin` remote matching the configured `owner/repository` | Prevents applying a reviewed manifest to a different repository. |
 | GitHub CLI (`gh`) with authenticated, configured scopes | Used to discover GitHub state and apply GitHub resource changes. |
-| Linux descriptor-relative filesystem support for managed file or template writes | Those local writes fail closed when the required safe-write support is unavailable. |
+
+| Safe local file writes | Managed file and template writes use Linux descriptor traversal on Linux. macOS and Windows enforce path confinement, symlink rejection, atomic replacement, and permission preservation. Full race immunity against parent swaps requires Linux descriptor support. |
 
 Projects v2 discovery, GraphQL, and mutations run only when the manifest includes `project`. Its required scopes are also manifest-driven.
 
