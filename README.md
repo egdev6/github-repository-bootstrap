@@ -94,7 +94,7 @@ A changed manifest, target, discovered state, or managed-file hash produces a di
 ### Install from a release tag
 
 ```bash
-pi install -l git:github.com/egdev6/github-repository-bootstrap@v1.0.0
+pi install -l git:github.com/egdev6/github-repository-bootstrap@v1.1.0
 ```
 
 Before installing, review the release source and the [skill instructions][skill]. The package is a Pi package: `package.json` exposes the skill through `pi.skills`.
