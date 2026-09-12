@@ -38,7 +38,7 @@
 1. Install a reviewed, immutable release tag in the project you want to configure:
 
    ```bash
-   pi install -l git:github.com/egdev6/github-repository-bootstrap@v1.0.0
+   pi install -l git:github.com/egdev6/github-repository-bootstrap@v1.1.0
    ```
 
 2. In Pi, ask for the repository outcome—not a blind mutation. For example:
