@@ -1,7 +1,7 @@
 ---
 name: github-repository-bootstrap
 description: "Trigger: GitHub repository bootstrap, labels, milestones, issue templates, PR templates, Projects v2, project fields, project views. Plan and apply reusable repository bootstrap safely."
-license: Apache-2.0
+license: MIT
 metadata:
   author: gentleman-programming
   version: "1.0"
