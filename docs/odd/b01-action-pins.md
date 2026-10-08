@@ -19,6 +19,10 @@ Public provenance (verify on a pin update; do not only edit the test constant):
 `workflow-policy.test.mjs` adds seven structural policy tests; against the
 pre-pin workflow the historical RED was 5 pass / 2 fail (pins, test-checkout
 credential), GREEN is 7 pass, `npm test` 50 pass / 0 fail, `actionlint` clean.
-These are structural checks, not runtime credential claims; triggers, gating,
-the release path, version derivation and idempotency commands are unchanged,
-remote CI pending.
+The first remote run failed only the windows-latest case: that fixture mutated
+the workflow with an LF-only replace, so a CRLF checkout kept
+`persist-credentials: false` and the control asserted nothing; the fixture now
+normalizes to LF and re-expands to both LF and CRLF, and local checks are 50
+pass / 0 fail pending a new remote run. These are structural checks, not runtime
+credential claims; triggers, gating, the release path, version derivation and
+idempotency commands are unchanged.
