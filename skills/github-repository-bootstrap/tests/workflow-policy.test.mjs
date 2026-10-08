@@ -20,6 +20,12 @@ const SETUP_NODE_REF = `actions/setup-node@${SETUP_NODE_SHA}`;
 const GITLEAKS_VERSION = "8.30.1";
 const GITLEAKS_URL = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz";
 const GITLEAKS_SHA256 = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb";
+
+// Actionlint pins. Same independence rule as Gitleaks: the workflow and
+// ci-tools.json carry these literals; nothing reads the metadata at runtime.
+const ACTIONLINT_VERSION = "1.7.12";
+const ACTIONLINT_URL = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz";
+const ACTIONLINT_SHA256 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8";
 const CI_TOOLS = path.join(repoRoot, ".github/ci-tools.json");
 
 // Vendor pins. On update, re-verify the new tag/SHA on the official action
@@ -273,6 +279,40 @@ function installerProblems(text) {
   return problems;
 }
 
+// Actionlint mirrors the Gitleaks installer: independent literals, strict
+// checksum before the named binary is streamed out, no shell pipe, no install.
+function actionlintInstallerProblems(text) {
+  const step = stepsOf(job(text, "security")).find((candidate) => candidate.join("\n").includes("Install actionlint"));
+  if (!step) return ["the security job must install actionlint"];
+  const body = step.join("\n");
+  const problems = [];
+  if (!body.includes(`ACTIONLINT_VERSION: "${ACTIONLINT_VERSION}"`)) problems.push("actionlint version must be an independent literal env");
+  if (!body.includes(ACTIONLINT_URL)) problems.push("actionlint URL must be an independent literal");
+  if (!body.includes(ACTIONLINT_SHA256)) problems.push("actionlint SHA-256 must be an independent literal");
+  const check = body.indexOf("sha256sum --check");
+  const extract = body.indexOf("tar -xzOf");
+  if (check === -1) problems.push("the actionlint archive must be hash-checked");
+  if (extract === -1) problems.push("only the named actionlint binary may be streamed out with tar -xzOf");
+  if (check !== -1 && extract !== -1 && check > extract) problems.push("the actionlint checksum must precede extraction");
+  if (!body.includes("chmod +x")) problems.push("the actionlint binary must become executable");
+  if (/\|\s*(?:ba)?sh\b/.test(body)) problems.push("no actionlint download may pipe into a shell");
+  return problems;
+}
+
+// The Linux-only actionlint stages run through the verified binary; the fixture
+// file must stay out of the three-OS npm matrix.
+function actionlintStepProblems(text) {
+  const security = job(text, "security").join("\n");
+  const problems = [];
+  if (!security.includes("node scripts/lint-workflows.mjs")) problems.push("the security job must run the workflow linter");
+  if (!security.includes("node --test skills/github-repository-bootstrap/tests/actionlint-fixtures.mjs")) problems.push("the security job must invoke the actionlint fixtures explicitly");
+  if (!security.includes("ACTIONLINT_BIN: ${{ runner.temp }}/ci-tools/actionlint")) problems.push("the actionlint steps must pass the verified binary via ACTIONLINT_BIN");
+  const fixtures = path.join(repoRoot, "skills/github-repository-bootstrap/tests/actionlint-fixtures.mjs");
+  if (!fs.existsSync(fixtures)) problems.push("the actionlint fixtures file must exist");
+  else if (path.basename(fixtures).endsWith(".test.mjs")) problems.push("the Linux-only fixture must not be auto-discovered by the npm matrix");
+  return problems;
+}
+
 // Default rules, redaction, no repository allowlist, no uploaded report.
 function scanProblems(text) {
   const security = job(text, "security").join("\n");
@@ -309,7 +349,12 @@ function metadataProblems() {
   const problems = [];
   if (!fs.existsSync(CI_TOOLS)) return ["ci-tools.json must exist"];
   const tools = JSON.parse(fs.readFileSync(CI_TOOLS, "utf8"));
-  if (JSON.stringify(Object.keys(tools)) !== JSON.stringify(["gitleaks"])) problems.push("ci-tools.json must mirror only gitleaks");
+  if (JSON.stringify(Object.keys(tools)) !== JSON.stringify(["actionlint", "gitleaks"])) problems.push("ci-tools.json must mirror exactly actionlint and gitleaks");
+  const actionlint = tools.actionlint ?? {};
+  if (actionlint.version !== ACTIONLINT_VERSION) problems.push("ci-tools.json actionlint version must match the workflow pin");
+  if (actionlint.sha256 !== ACTIONLINT_SHA256) problems.push("ci-tools.json actionlint sha256 must match the workflow pin");
+  if (actionlint.url !== ACTIONLINT_URL) problems.push("ci-tools.json actionlint url must match the workflow pin");
+  if (typeof actionlint.provenance !== "string" || !actionlint.provenance.includes(`v${ACTIONLINT_VERSION}`)) problems.push("ci-tools.json actionlint provenance must reference the release");
   const gitleaks = tools.gitleaks ?? {};
   if (gitleaks.version !== GITLEAKS_VERSION) problems.push("ci-tools.json version must match the workflow pin");
   if (gitleaks.sha256 !== GITLEAKS_SHA256) problems.push("ci-tools.json sha256 must match the workflow pin");
@@ -407,4 +452,24 @@ test("the gitleaks scan is full-history, redacted, and ignores repository allowl
 test("the mandatory gitleaks fixtures run in CI and ci-tools.json mirrors the pins", () => {
   assert.deepEqual(fixtureStepProblems(workflow), []);
   assert.deepEqual(metadataProblems(), []);
+});
+
+test("the actionlint installer pins independent literals and verifies before extracting", () => {
+  assert.deepEqual(actionlintInstallerProblems(workflow), []);
+  assert.ok(actionlintInstallerProblems(workflow.replace(ACTIONLINT_SHA256, "")).length > 0, "a missing checksum literal must fail");
+  assert.ok(actionlintInstallerProblems(workflow.replace(ACTIONLINT_URL, "")).length > 0, "a missing URL literal must fail");
+  const lines = workflow.split("\n");
+  const start = lines.findIndex((line) => line.includes("name: Install actionlint"));
+  const checkAt = lines.findIndex((line, index) => index > start && line.includes("sha256sum --check"));
+  const extractAt = lines.findIndex((line, index) => index > start && line.includes("tar -xzOf"));
+  assert.ok(start !== -1 && checkAt !== -1 && extractAt !== -1 && checkAt < extractAt, "the checksum must precede extraction in the shipped workflow");
+  const reversed = [...lines];
+  [reversed[checkAt], reversed[extractAt]] = [reversed[extractAt], reversed[checkAt]];
+  assert.ok(actionlintInstallerProblems(reversed.join("\n")).length > 0, "extraction before verification must fail");
+});
+
+test("actionlint runs through the verified binary and its fixtures stay Linux-only", () => {
+  assert.deepEqual(actionlintStepProblems(workflow), []);
+  assert.ok(actionlintStepProblems(workflow.replace("node scripts/lint-workflows.mjs", "echo lint")).length > 0, "a wrapper replaced by echo must fail");
+  assert.ok(actionlintStepProblems(workflow.replace("node --test skills/github-repository-bootstrap/tests/actionlint-fixtures.mjs", "echo fixtures")).length > 0, "removing the fixture invocation must fail");
 });

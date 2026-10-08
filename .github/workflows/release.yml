@@ -83,6 +83,33 @@ jobs:
           GITLEAKS_BIN: ${{ runner.temp }}/ci-tools/gitleaks
         run: node --test skills/github-repository-bootstrap/tests/gitleaks-fixtures.mjs
 
+      - name: Install actionlint 1.7.12
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/ci-tools"
+          mkdir -p "${tools}"
+          archive="${tools}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error --output "${archive}" "${ACTIONLINT_URL}"
+          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${archive}" | sha256sum --check --strict
+          tar -xzOf "${archive}" actionlint > "${tools}/actionlint"
+          chmod +x "${tools}/actionlint"
+          echo "${tools}" >> "${GITHUB_PATH}"
+          "${tools}/actionlint" -version
+
+      - name: Lint workflows
+        env:
+          ACTIONLINT_BIN: ${{ runner.temp }}/ci-tools/actionlint
+        run: node scripts/lint-workflows.mjs
+
+      - name: Run actionlint regression fixtures
+        env:
+          ACTIONLINT_BIN: ${{ runner.temp }}/ci-tools/actionlint
+        run: node --test skills/github-repository-bootstrap/tests/actionlint-fixtures.mjs
+
   test-gate:
     name: test
     if: ${{ always() }}
