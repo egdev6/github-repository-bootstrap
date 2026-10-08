@@ -18,6 +18,10 @@ Use open-ended questions for the intended repository outcome, ownership when dis
 - **Files:** configure generic repository files through top-level `files`: each destination key and `source` must be repository-relative, regular, and confined to the actual repository root; each entry explicitly selects `ensure` or `replace`.
 - **Templates:** configure the current fixed issue-form and pull-request templates, or omit `templates`. Legacy `templates` remains accepted unchanged during the transition and may be used alongside `files`. Arbitrary managed template files are a later module.
 
+## CI And Security Handoff
+
+Bootstrap owns the governance resources above. When the user wants build, test, or scan pipelines, hand off to the `github-ci-advisor` skill, which proposes and applies only after approval. When untrusted scripts, manifests, workflows, or agent docs need review, hand off to the read-only `repository-security-review` skill, which reports and escalates but applies nothing. Neither handoff is automatic and neither is authority to write workflows or change repository state.
+
 ## Boundaries
 
 Never invent project governance, milestones, workflows, labels, owners, field values, or views. Do not treat an existing resource as managed unless the manifest says so. Produce the manifest for review, then follow `plan → explicit SHA authorization → apply → verify`; a plan is not authorization.

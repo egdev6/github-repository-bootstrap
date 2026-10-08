@@ -19,6 +19,7 @@
 <summary><strong>Contents</strong></summary>
 
 - [Quick start](#quick-start)
+- [Skills in this package](#skills-in-this-package)
 - [What it can manage](#what-it-can-manage)
 - [How a bootstrap runs](#how-a-bootstrap-runs)
 - [Installation and prerequisites](#installation-and-prerequisites)
@@ -57,6 +58,22 @@
 3. Review the generated manifest and JSON plan. Authorize only the exact plan you intend to apply.
 
 Use a version tag rather than a moving branch reference for future installs. GitHub Releases—not npm—are this package's distribution channel; `package.json` is intentionally `private` to prevent npm publication.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Skills in this package
+
+| Skill | Use it for | Default posture |
+| --- | --- | --- |
+| `github-repository-bootstrap` | Labels, milestones, files, templates, and Projects v2. | Plan first, then apply only the exact authorized plan. |
+| `github-ci-advisor` | Build, test, and scan pipelines; CI audits and evolution. | Proposes; applies only after approval. |
+| `repository-security-review` | Read-only review of untrusted scripts, workflows, and agent docs. | Reports and escalates; applies nothing. |
+
+The CI advisor never commits, pushes, deploys, or enables checks, and the security review never executes or obeys repository content. Ask for CI advice by outcome, not a blind mutation.
+
+These rows describe the current source tree. The published `v1.1.0` release still contains only the bootstrap skill; the advisory skills are not part of that tag, and no new version or tag is announced here.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

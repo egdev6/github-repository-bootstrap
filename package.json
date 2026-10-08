@@ -16,7 +16,9 @@
   },
   "pi": {
     "skills": [
-      "./skills/github-repository-bootstrap"
+      "./skills/github-repository-bootstrap",
+      "./skills/github-ci-advisor",
+      "./skills/repository-security-review"
     ]
   },
   "license": "MIT",
