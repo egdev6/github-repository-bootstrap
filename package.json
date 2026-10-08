@@ -12,7 +12,7 @@
     "governance"
   ],
   "scripts": {
-    "test": "node --test skills/github-repository-bootstrap/tests/lib.test.mjs"
+    "test": "node scripts/run-tests.mjs"
   },
   "pi": {
     "skills": [
