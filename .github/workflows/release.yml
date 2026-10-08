@@ -1,114 +1,29 @@
-name: Release
+# Temporary #14 integration probe. NEVER merge this branch into main.
+# Source gate: main d38d865debc69f5818c4c93007270d7745c0d1e6, copied verbatim.
+# Explicit dispatch only; no checkout, secrets, third-party actions or release.
+name: B01 security result probe
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: probe prerequisite
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # actions/checkout v4.4.0
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # actions/setup-node v4.4.0
-        with:
-          node-version: 20
-
-      - name: Run tests
-        run: npm test
+      - name: Produce successful prerequisite
+        run: exit 0
 
   security:
     name: security
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
+    timeout-minutes: 10
     steps:
-      - name: Check out full history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # actions/checkout v4.4.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # actions/setup-node v4.4.0
-        with:
-          node-version: 20
-
-      - name: Install Gitleaks 8.30.1
-        env:
-          GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_URL: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          set -euo pipefail
-          tools="${RUNNER_TEMP}/ci-tools"
-          mkdir -p "${tools}"
-          archive="${tools}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl --fail --location --silent --show-error --output "${archive}" "${GITLEAKS_URL}"
-          printf '%s  %s\n' "${GITLEAKS_SHA256}" "${archive}" | sha256sum --check --strict
-          tar -xzOf "${archive}" gitleaks > "${tools}/gitleaks"
-          chmod +x "${tools}/gitleaks"
-          echo "${tools}" >> "${GITHUB_PATH}"
-          "${tools}/gitleaks" version
-
-      - name: Scan full history for secrets
-        run: |
-          set -euo pipefail
-          config="${RUNNER_TEMP}/gitleaks.toml"
-          printf '[extend]\nuseDefault = true\n' > "${config}"
-          ignore="${RUNNER_TEMP}/gitleaks-ignore"
-          : > "${ignore}"
-          gitleaks git \
-            --config "${config}" --gitleaks-ignore-path "${ignore}" --ignore-gitleaks-allow \
-            --log-opts='--all --full-history' --redact=100 --no-banner \
-            --report-format json --report-path "${RUNNER_TEMP}/gitleaks-report.json" .
-
-      - name: Run scanner regression fixtures
-        env:
-          GITLEAKS_BIN: ${{ runner.temp }}/ci-tools/gitleaks
-        run: node --test skills/github-repository-bootstrap/tests/gitleaks-fixtures.mjs
-
-      - name: Install actionlint 1.7.12
-        env:
-          ACTIONLINT_VERSION: "1.7.12"
-          ACTIONLINT_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
-          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-        run: |
-          set -euo pipefail
-          tools="${RUNNER_TEMP}/ci-tools"
-          mkdir -p "${tools}"
-          archive="${tools}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl --fail --location --silent --show-error --output "${archive}" "${ACTIONLINT_URL}"
-          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${archive}" | sha256sum --check --strict
-          tar -xzOf "${archive}" actionlint > "${tools}/actionlint"
-          chmod +x "${tools}/actionlint"
-          echo "${tools}" >> "${GITHUB_PATH}"
-          "${tools}/actionlint" -version
-
-      - name: Lint workflows
-        env:
-          ACTIONLINT_BIN: ${{ runner.temp }}/ci-tools/actionlint
-        run: node scripts/lint-workflows.mjs
-
-      - name: Run actionlint regression fixtures
-        env:
-          ACTIONLINT_BIN: ${{ runner.temp }}/ci-tools/actionlint
-        run: node --test skills/github-repository-bootstrap/tests/actionlint-fixtures.mjs
+      - name: Produce controlled security failure
+        run: exit 1
 
   test-gate:
     name: test
@@ -121,59 +36,3 @@ jobs:
           MATRIX_RESULT: ${{ needs.test.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
         run: test "${MATRIX_RESULT}" = "success" && test "${SECURITY_RESULT}" = "success"
-
-  release:
-    name: release
-    if: github.event_name == 'push'
-    needs: test-gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out the pushed commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # actions/checkout v4.4.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # actions/setup-node v4.4.0
-        with:
-          node-version: 20
-
-      - name: Derive release tag
-        id: version
-        run: |
-          version="$(node -p 'require("./package.json").version')"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Create annotated tag when absent
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          SHA: ${{ github.sha }}
-        run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists; leaving it unchanged."
-            exit 0
-          fi
-
-          git -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            tag --annotate "${TAG}" "${SHA}" --message "Release ${TAG}"
-          git push origin "refs/tags/${TAG}"
-          echo "Created annotated tag ${TAG} at ${SHA}."
-
-      - name: Create GitHub Release when absent
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "GitHub Release ${TAG} already exists; skipping creation."
-            exit 0
-          fi
-
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${TAG}" \
-            --generate-notes
