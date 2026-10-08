@@ -49,13 +49,17 @@ test("both new skills use the required section order", () => {
 });
 
 test("frontmatter is kebab-case, matches its directory, and keeps package metadata", () => {
-  assert.match(ciSkill, /^---\nname: github-ci-advisor\n/);
-  assert.match(secSkill, /^---\nname: repository-security-review\n/);
-  for (const text of [ciSkill, secSkill]) {
-    assert.match(text, /\nlicense: MIT\n/);
-    assert.match(text, /\n  author: gentleman-programming\n/);
-    assert.match(text, /\n  version: "1\.0"\n/);
-    assert.match(text, /\ndescription: "Trigger: [^"\n]+"\n/);
+  for (const newline of ["\n", "\r\n"]) {
+    const ci = ciSkill.replace(/\r?\n/g, newline);
+    const security = secSkill.replace(/\r?\n/g, newline);
+    assert.match(ci, /^---\r?\nname: github-ci-advisor\r?\n/);
+    assert.match(security, /^---\r?\nname: repository-security-review\r?\n/);
+    for (const text of [ci, security]) {
+      assert.match(text, /\r?\nlicense: MIT\r?\n/);
+      assert.match(text, /\r?\n  author: gentleman-programming\r?\n/);
+      assert.match(text, /\r?\n  version: "1\.0"\r?\n/);
+      assert.match(text, /\r?\ndescription: "Trigger: [^"\r\n]+"\r?\n/);
+    }
   }
 });
 
