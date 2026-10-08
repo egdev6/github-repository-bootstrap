@@ -1,6 +1,6 @@
 # B01 advisory skills (U1)
 
-Local preparation only. No commit, push, or PR is included in this unit.
+This records local preparation; delivery and SHA-bound remote evidence are tracked separately in the PR.
 
 ## Scope
 
@@ -12,7 +12,8 @@ Local preparation only. No commit, push, or PR is included in this unit.
 ## Local evidence
 
 - Four new skill docs: 186 lines (53 + 46 + 53 + 34).
-- Structural advisor test: 134 lines, 8 cases.
+- Structural advisor test: 138 lines, 8 cases; frontmatter checks exercise both LF and CRLF on every platform.
+- Windows exposed an LF-only assertion; the explicit CRLF reproduction failed before the fix. No skip, workflow change, or metadata check removal was used.
 - Local suite observed 77 passing (69 baseline + 8); gitleaks 4 and actionlint 4 fixtures pass on the local Node 24 toolchain.
 
 ## Availability
