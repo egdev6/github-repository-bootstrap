@@ -20,11 +20,10 @@ jobs:
   security:
     name: security
     runs-on: ubuntu-latest
-    if: ${{ github.ref != 'refs/heads/ci/b01-security-result-probe' }}
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Produce skipped security control
-        run: exit 0
+      - name: Wait for cancellation of this probe run only
+        run: sleep 240
 
   test-gate:
     name: test
