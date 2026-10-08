@@ -252,12 +252,22 @@ test("dropping all uses fields and overriding test permissions are rejected", ()
 });
 
 test("a credential flag on setup-node or a comment cannot satisfy the checkout rule", () => {
-  const onSetupNode = workflow
-    .replace("          persist-credentials: false\n", "")
-    .replace("          node-version: 20", "          node-version: 20\n          persist-credentials: false");
-  assert.notDeepEqual(testCheckoutProblems(onSetupNode), [], "persist-credentials on setup-node must not count for the checkout");
-  const commented = workflow.replace("          persist-credentials: false", "          # persist-credentials: false");
-  assert.notDeepEqual(testCheckoutProblems(commented), [], "a commented directive must not count as present");
+  const flagCount = (text) => text.split("persist-credentials: false").length - 1;
+  for (const { name, eol } of [{ name: "LF", eol: "\n" }, { name: "CRLF", eol: "\r\n" }]) {
+    const fixture = workflow.replace(/\r?\n/g, eol);
+    const before = flagCount(fixture);
+    const withoutCheckoutFlag = fixture.replace(/^          persist-credentials: false\r?\n/m, "");
+    assert.equal(flagCount(withoutCheckoutFlag), before - 1, `${name}: the mutation must remove the checkout credential flag`);
+    const onSetupNode = withoutCheckoutFlag.replace(
+      "          node-version: 20",
+      `          node-version: 20${eol}          persist-credentials: false`,
+    );
+    const setupEntries = withEntries(stepsForAction(onSetupNode, "test", "actions/setup-node")[0]);
+    assert.equal(setupEntries["persist-credentials"], "false", `${name}: the flag must be added to setup-node only`);
+    assert.notDeepEqual(testCheckoutProblems(onSetupNode), [], `${name}: persist-credentials on setup-node must not count for the checkout`);
+    const commented = fixture.replace("          persist-credentials: false", "          # persist-credentials: false");
+    assert.notDeepEqual(testCheckoutProblems(commented), [], `${name}: a commented directive must not count as present`);
+  }
 });
 
 test("floating and malformed action refs are rejected", () => {
