@@ -41,6 +41,8 @@ Emit one JSON report with validation, discovery, plan, completed, skipped, and f
 ## References
 
 - [Adaptive intake](references/intake.md)
+- [CI advisor](../github-ci-advisor/SKILL.md)
+- [Repository security review](../repository-security-review/SKILL.md)
 - [Configuration schema](assets/config.schema.json)
 - [Example configuration](assets/example.config.json)
 - [Bootstrap executor](scripts/bootstrap.mjs)
