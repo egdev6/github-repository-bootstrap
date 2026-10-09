@@ -6,7 +6,7 @@ Read this before planning or applying. It carries the executor detail that [`SKI
 
 Configure generic repository files through the top-level `files` map: repository-relative destination keys and `source` values, each with explicit `ensure` or `replace`. Preflight sources and destinations under the actual repository root; reject absolute paths, traversal, symbolic links, non-regular files, and unsafe parents. Each entry is planned with its source and destination SHA-256.
 
-The runtime rejects only `files`-to-`files` destination conflicts. There is no runtime collision guard between a `files` destination and a fixed template destination. When any destination could overlap a fixed template path, stop for manual review instead of assuming the CLI detects it; a general collision guard is planned, not available.
+The runtime rejects `files`-to-`files` destination conflicts at preflight. Configuration validation additionally rejects a `files` destination that equals, contains, or is contained by a **selected** fixed template destination: `.github/ISSUE_TEMPLATE/config.yml` whenever `templates` is present, each selected issue form, and `.github/pull_request_template.md` only when `pullRequest` is true. The rejection is an error at `$.files.<destination>` and applies to `ensure` and `replace` in both modules; identical bytes never authorize the overlap. The comparison is lexical and host-aware, so it does not resolve symlinks, hard links, or every alias a case-insensitive volume can present. Any overlap that only such an alias would create still needs manual review; a broader general collision guard is not available.
 
 ## Fixed Templates
 
@@ -46,7 +46,7 @@ The modules below are policy for future reviewed units. They are **not implement
 | Branch protection | `branchProtection` | No |
 | Issue lifecycle workflow | `templates.issueWorkflow` | No |
 | Project issue sync | `project.issueSync` | No |
-| General file/template collision guard | none | No |
+| General file/template collision guard | none | No; only the selected fixed-template destinations above are guarded today |
 
 Planned policy, kept here so it is never mistaken for current behavior:
 
