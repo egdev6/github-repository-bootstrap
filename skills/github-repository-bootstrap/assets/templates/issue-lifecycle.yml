@@ -40,6 +40,7 @@ jobs:
           const NEEDS_INFO = "status:needs-info";
           const NEEDS_DESIGN = "status:needs-design";
           const HUMAN_STATES = [APPROVED, IN_PROGRESS, BLOCKED, NEEDS_INFO, NEEDS_DESIGN];
+          const PR_ACTIONS = new Set(["opened", "reopened", "edited", "synchronize", "ready_for_review"]);
 
           const CLOSING_QUERY =
             "query($owner:String!, $name:String!, $number:Int!, $cursor:String) {" +
@@ -130,6 +131,7 @@ jobs:
 
           function closingIssues(owner, name, number) {
             const references = [];
+            const seenCursors = new Set();
             let cursor = "";
             for (;;) {
               const args = [
@@ -172,8 +174,9 @@ jobs:
                 throw new Error("GraphQL pagination metadata was malformed");
               if (connection.pageInfo.hasNextPage !== true) return references;
               const next = connection.pageInfo.endCursor;
-              if (typeof next !== "string" || !next || next === cursor)
+              if (typeof next !== "string" || !next || next === cursor || seenCursors.has(next))
                 throw new Error("GraphQL pagination did not advance");
+              seenCursors.add(next);
               cursor = next;
             }
           }
@@ -204,6 +207,10 @@ jobs:
           function handlePullRequest(event) {
             const pr = event.pull_request;
             if (!pr) return;
+            if (!PR_ACTIONS.has(event.action)) {
+              console.log("unsupported pull request action: " + event.action);
+              return;
+            }
             const head = pr.head && pr.head.repo && pr.head.repo.full_name;
             if (!head || head !== event.repository.full_name) {
               console.log("skipping pull request from a fork");
@@ -215,8 +222,11 @@ jobs:
             }
             const owner = event.repository.owner.login;
             const name = event.repository.name;
+            const seenReferences = new Set();
             for (const reference of closingIssues(owner, name, pr.number)) {
               if (reference.state !== "OPEN") continue;
+              if (seenReferences.has(reference.number)) continue;
+              seenReferences.add(reference.number);
               const live = liveIssue(reference.number);
               if (live.state !== "open") continue;
               if (!live.labels.has(APPROVED)) continue;
