@@ -1,0 +1,194 @@
+name: Project issue sync
+
+# Inert packaged data for the GitHub Projects v2 issue-sync workflow. It is not
+# installed, activated, or executed by the bootstrap skill, and no default
+# install or opt-out exists yet: the current schema and CLI reject project.issueSync
+# and templates.issueWorkflow. A human must materialize the three template markers
+# (secret name, project owner, base64 title), grant the token access, and review
+# permissions before manual activation; new/reopened issues only, no backfill.
+on:
+  issues:
+    types: [opened, reopened]
+
+# One sync run per issue. Distinct issues never cancel each other, and a later
+# event never cancels an in-flight run; the inline script always re-reads the
+# live issue before mutating and never imports historical issues.
+concurrency:
+  group: project-issue-sync-${{ github.repository }}-${{ github.event_name }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+# The workflow only reads the repository; the project is written with the
+# dedicated project token, never the repository-scoped default Actions token.
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  project-issue-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add the issue to the configured project
+        env:
+          GH_TOKEN: ${{ secrets.__SECRET_NAME__ }}
+          PROJECT_OWNER: __PROJECT_OWNER__
+          PROJECT_TITLE_BASE64: __PROJECT_TITLE_BASE64__
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require("node:child_process");
+          const fs = require("node:fs");
+          const PROJECTS_QUERY =
+            "query($owner:String!, $name:String!, $cursor:String) {" +
+            " repository(owner:$owner, name:$name) {" +
+            " projectsV2(first:100, after:$cursor) {" +
+            " pageInfo { hasNextPage endCursor }" +
+            " nodes { id number title viewerCanUpdate owner { ... on Organization { login } ... on User { login } } }" +
+            " } } }";
+          const ITEMS_QUERY =
+            "query($projectId:ID!, $cursor:String) {" +
+            " node(id:$projectId) { ... on ProjectV2 {" +
+            " items(first:100, after:$cursor) {" +
+            " pageInfo { hasNextPage endCursor }" +
+            " nodes { id content { ... on Issue { id } } }" +
+            " } } } }";
+          const ADD_MUTATION =
+            "mutation($projectId:ID!, $contentId:ID!) {" +
+            " addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}) {" +
+            " item { id content { ... on Issue { id } } } } }";
+          const ACCESS_FAILURE =
+            /HTTP 401|HTTP 403|HTTP 404|FORBIDDEN|NOT_FOUND|Could not resolve to a (?:Repository|node|ProjectV2)|Resource not accessible|Bad credentials/i;
+          function warn(message) {
+            process.stdout.write("::warning::" + message + "\n");
+            const summary = process.env.GITHUB_STEP_SUMMARY;
+            if (summary) {
+              try { fs.appendFileSync(summary, "> [!WARNING]\n> " + message + "\n"); } catch {}
+            }
+            console.log(message);
+          }
+          function fatal(message) {
+            process.stderr.write(message + "\n");
+            process.exit(1);
+          }
+          function capture(args) {
+            try {
+              return { ok: true, stdout: execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
+            } catch (error) {
+              return {
+                ok: false,
+                stdout: String((error && error.stdout) || ""),
+                stderr: String((error && error.stderr) || (error && error.message) || ""),
+              };
+            }
+          }
+          function parsePayload(output, label) {
+            let payload;
+            try { payload = JSON.parse(output); } catch { fatal(label + " returned malformed JSON"); }
+            if (!payload || typeof payload !== "object" || Array.isArray(payload)) fatal(label + " returned an unexpected GraphQL payload");
+            const errors = (payload.errors || []).map((entry) => entry && entry.message).filter(Boolean).join("; ");
+            if (errors) {
+              if (ACCESS_FAILURE.test(errors)) { warn(label + ": access was denied by the configured token; no issue was added. Confirm the token can read the repository and project."); return null; }
+              fatal(label + " GraphQL failed; refusing to continue");
+            }
+            return payload;
+          }
+          function graphqlOutput(args, label) {
+            const result = capture(args);
+            if (!result.ok) {
+              if (ACCESS_FAILURE.test(result.stderr + " " + result.stdout)) { warn(label + ": access was denied by the configured token; no issue was added. Confirm the token can read the repository and project."); return null; }
+              fatal(label + " failed unexpectedly; refusing to continue");
+            }
+            const payload = parsePayload(result.stdout, label);
+            if (payload === null) return null;
+            if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) fatal(label + " returned an unexpected GraphQL payload");
+            return payload.data;
+          }
+          function nextCursor(pageInfo, cursor, label) {
+            if (!pageInfo || typeof pageInfo !== "object" || Array.isArray(pageInfo) || typeof pageInfo.hasNextPage !== "boolean") fatal(label + " returned malformed pagination metadata; refusing a partial result");
+            if (pageInfo.hasNextPage !== true) return null;
+            const next = pageInfo.endCursor;
+            if (typeof next !== "string" || !next || next === cursor) fatal(label + " pagination did not advance; refusing a partial result");
+            return next;
+          }
+          function repo() {
+            const parts = (process.env.GITHUB_REPOSITORY || "").split("/");
+            if (parts.length !== 2 || !parts[0] || !parts[1]) fatal("GITHUB_REPOSITORY must be owner/name");
+            return { owner: parts[0], name: parts[1] };
+          }
+          function ownerLogin(node) {
+            const owner = node && node.owner;
+            return owner && typeof owner.login === "string" ? owner.login : null;
+          }
+          function linkedProjects() {
+            const projects = [];
+            let cursor = null;
+            for (;;) {
+              const args = ["api", "graphql", "-f", "query=" + PROJECTS_QUERY, "-f", "owner=" + repo().owner, "-f", "name=" + repo().name];
+              if (cursor) args.push("-f", "cursor=" + cursor);
+              const data = graphqlOutput(args, "Listing repository-linked projects");
+              if (data === null) return null;
+              const connection = data.repository && data.repository.projectsV2;
+              if (!connection) fatal("Project listing response was missing projectsV2");
+              if (!Array.isArray(connection.nodes)) fatal("Project listing response was missing nodes");
+              for (const node of connection.nodes) projects.push(node);
+              cursor = nextCursor(connection.pageInfo, cursor, "Project listing");
+              if (cursor === null) return projects;
+            }
+          }
+          function projectItemsHas(projectId, contentId) {
+            let cursor = null;
+            for (;;) {
+              const args = ["api", "graphql", "-f", "query=" + ITEMS_QUERY, "-f", "projectId=" + projectId];
+              if (cursor) args.push("-f", "cursor=" + cursor);
+              const data = graphqlOutput(args, "Listing project items");
+              if (data === null) return null;
+              const connection = data.node && data.node.items;
+              if (!connection) fatal("Project item listing response was missing items");
+              if (!Array.isArray(connection.nodes)) fatal("Project item listing response was missing nodes");
+              for (const item of connection.nodes) if (item && item.content && item.content.id === contentId) return true;
+              cursor = nextCursor(connection.pageInfo, cursor, "Project item listing");
+              if (cursor === null) return false;
+            }
+          }
+          function main() {
+            if (!process.env.GH_TOKEN) {
+              warn("Project sync token secret is not configured; project issue sync was skipped");
+              return;
+            }
+            const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+            const number = event && event.issue && event.issue.number;
+            if (!Number.isInteger(number)) fatal("Event did not include an issue number");
+            const { owner, name } = repo();
+            const issueResult = capture(["api", "repos/" + owner + "/" + name + "/issues/" + number]);
+            let issue;
+            if (!issueResult.ok) {
+              if (ACCESS_FAILURE.test(issueResult.stderr + " " + issueResult.stdout)) return warn("Reading the live issue was denied by the configured token; no issue was synced. Confirm the token can read repository issues.");
+              fatal("Reading the live issue failed unexpectedly; refusing to continue");
+            }
+            try { issue = JSON.parse(issueResult.stdout); } catch { fatal("Reading live issue #" + number + " returned malformed JSON"); }
+            if (issue.state !== "open" || issue.pull_request) { console.log("Issue #" + number + " is not an open issue; nothing to sync"); return; }
+            if (typeof issue.node_id !== "string" || !issue.node_id) fatal("Reading live issue #" + number + " did not return a node identity");
+            const projects = linkedProjects();
+            if (projects === null) return;
+            const titleBase64 = process.env.PROJECT_TITLE_BASE64;
+            if (typeof titleBase64 !== "string" || !titleBase64 || Buffer.from(Buffer.from(titleBase64, "base64").toString("utf8"), "utf8").toString("base64") !== titleBase64) fatal("Project title configuration is missing or invalid; refusing to continue");
+            const title = Buffer.from(titleBase64, "base64").toString("utf8");
+            const expectedOwner = String(process.env.PROJECT_OWNER || "").toLowerCase();
+            const matches = projects.filter((project) => project && project.title === title && ownerLogin(project) && ownerLogin(project).toLowerCase() === expectedOwner);
+            if (matches.length === 0) fatal("Configured project was not found among repository-linked projects");
+            if (matches.length > 1) fatal("Multiple repository-linked projects match the configured owner and title; resolve the ambiguity before syncing");
+            const project = matches[0];
+            if (project.viewerCanUpdate !== true) {
+              warn("The project sync token cannot update the configured project; the issue was not added. Grant the token project write access.");
+              return;
+            }
+            const existing = projectItemsHas(project.id, issue.node_id);
+            if (existing === null) return;
+            if (existing === true) { console.log("Issue #" + number + " is already tracked in the configured project"); return; }
+            const data = graphqlOutput(["api", "graphql", "-f", "query=" + ADD_MUTATION, "-f", "projectId=" + project.id, "-f", "contentId=" + issue.node_id], "Adding the issue to the project");
+            if (data === null) return;
+            const item = data.addProjectV2ItemById && data.addProjectV2ItemById.item;
+            if (!item || typeof item.id !== "string" || !item.id) fatal("Add mutation did not return a created item identity");
+            if (!item.content || item.content.id !== issue.node_id) fatal("Add mutation returned a mismatched issue identity");
+            console.log("Added issue #" + number + " to the configured project");
+          }
+          main();
+          NODE
