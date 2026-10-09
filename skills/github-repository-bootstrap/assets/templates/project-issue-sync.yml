@@ -101,11 +101,13 @@ jobs:
             if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) fatal(label + " returned an unexpected GraphQL payload");
             return payload.data;
           }
-          function nextCursor(pageInfo, cursor, label) {
+          function nextCursor(pageInfo, cursor, label, seen) {
             if (!pageInfo || typeof pageInfo !== "object" || Array.isArray(pageInfo) || typeof pageInfo.hasNextPage !== "boolean") fatal(label + " returned malformed pagination metadata; refusing a partial result");
             if (pageInfo.hasNextPage !== true) return null;
             const next = pageInfo.endCursor;
             if (typeof next !== "string" || !next || next === cursor) fatal(label + " pagination did not advance; refusing a partial result");
+            if (seen.has(next)) fatal(label + " pagination revisited a cursor; refusing a partial result");
+            seen.add(next);
             return next;
           }
           function repo() {
@@ -120,6 +122,7 @@ jobs:
           function linkedProjects() {
             const projects = [];
             let cursor = null;
+            const seen = new Set();
             for (;;) {
               const args = ["api", "graphql", "-f", "query=" + PROJECTS_QUERY, "-f", "owner=" + repo().owner, "-f", "name=" + repo().name];
               if (cursor) args.push("-f", "cursor=" + cursor);
@@ -129,12 +132,13 @@ jobs:
               if (!connection) fatal("Project listing response was missing projectsV2");
               if (!Array.isArray(connection.nodes)) fatal("Project listing response was missing nodes");
               for (const node of connection.nodes) projects.push(node);
-              cursor = nextCursor(connection.pageInfo, cursor, "Project listing");
+              cursor = nextCursor(connection.pageInfo, cursor, "Project listing", seen);
               if (cursor === null) return projects;
             }
           }
           function projectItemsHas(projectId, contentId) {
             let cursor = null;
+            const seen = new Set();
             for (;;) {
               const args = ["api", "graphql", "-f", "query=" + ITEMS_QUERY, "-f", "projectId=" + projectId];
               if (cursor) args.push("-f", "cursor=" + cursor);
@@ -144,7 +148,7 @@ jobs:
               if (!connection) fatal("Project item listing response was missing items");
               if (!Array.isArray(connection.nodes)) fatal("Project item listing response was missing nodes");
               for (const item of connection.nodes) if (item && item.content && item.content.id === contentId) return true;
-              cursor = nextCursor(connection.pageInfo, cursor, "Project item listing");
+              cursor = nextCursor(connection.pageInfo, cursor, "Project item listing", seen);
               if (cursor === null) return false;
             }
           }
@@ -153,9 +157,22 @@ jobs:
               warn("Project sync token secret is not configured; project issue sync was skipped");
               return;
             }
-            const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-            const number = event && event.issue && event.issue.number;
-            if (!Number.isInteger(number)) fatal("Event did not include an issue number");
+            if (process.env.GITHUB_EVENT_NAME !== "issues") {
+              console.log("Event " + process.env.GITHUB_EVENT_NAME + " is not an issues event; nothing to sync");
+              return;
+            }
+            let event;
+            try { event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")); } catch { fatal("Reading the workflow event returned malformed JSON; refusing to continue"); }
+            if (!event || typeof event !== "object" || Array.isArray(event)) fatal("Event payload was not an object; refusing to continue");
+            if (typeof event.action !== "string") fatal("Event did not include an action; refusing to continue");
+            if (event.action !== "opened" && event.action !== "reopened") {
+              console.log("Issue action " + event.action + " is not opened or reopened; nothing to sync");
+              return;
+            }
+            const eventIssue = event.issue;
+            if (!eventIssue || typeof eventIssue !== "object" || Array.isArray(eventIssue)) fatal("Event did not include an issue object; refusing to continue");
+            const number = eventIssue.number;
+            if (!Number.isSafeInteger(number) || number <= 0) fatal("Event did not include a usable issue number; refusing to continue");
             const { owner, name } = repo();
             const issueResult = capture(["api", "repos/" + owner + "/" + name + "/issues/" + number]);
             let issue;
