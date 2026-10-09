@@ -1,0 +1,240 @@
+name: Issue lifecycle
+
+# Inert packaged template. NOT installed or activated by the bootstrap skill;
+# "templates.issueWorkflow" is still rejected by the current validator. Wiring
+# install is reviewed future Runtime work (U5); deployment stays a human step.
+on:
+  issues:
+    types: [opened, reopened, closed]
+  pull_request:
+    types: [opened, reopened, edited, synchronize, ready_for_review]
+
+# One lifecycle run per issue or pull request entity. Distinct entities never
+# cancel each other; Actions may still coalesce pending runs for the same
+# entity, so the inline script always reads live issue state before mutating.
+concurrency:
+  group: issue-lifecycle-${{ github.repository }}-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  issue-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply issue lifecycle label transitions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require("node:child_process");
+          const fs = require("node:fs");
+
+          const REVIEW = "status:needs-review";
+          const APPROVED = "status:approved";
+          const IN_PROGRESS = "status:in-progress";
+          const BLOCKED = "status:blocked";
+          const NEEDS_INFO = "status:needs-info";
+          const NEEDS_DESIGN = "status:needs-design";
+          const HUMAN_STATES = [APPROVED, IN_PROGRESS, BLOCKED, NEEDS_INFO, NEEDS_DESIGN];
+
+          const CLOSING_QUERY =
+            "query($owner:String!, $name:String!, $number:Int!, $cursor:String) {" +
+            " repository(owner:$owner, name:$name) {" +
+            " pullRequest(number:$number) {" +
+            " closingIssuesReferences(first:100, after:$cursor) {" +
+            " pageInfo { hasNextPage endCursor }" +
+            " nodes { number state repository { owner { login } name } }" +
+            " } } } }";
+
+          function gh(args) {
+            return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+          }
+
+          function repo() {
+            const parts = (process.env.GITHUB_REPOSITORY || "").split("/");
+            if (parts.length !== 2 || !parts[0] || !parts[1])
+              throw new Error("GITHUB_REPOSITORY must be owner/name");
+            return { owner: parts[0], name: parts[1] };
+          }
+
+          function liveIssue(number) {
+            const { owner, name } = repo();
+            const issue = JSON.parse(
+              gh(["api", "repos/" + owner + "/" + name + "/issues/" + number]),
+            );
+            const labels = new Set(
+              (issue.labels || []).map((label) =>
+                typeof label === "string" ? label : label.name,
+              ),
+            );
+            return { state: issue.state, labels: labels };
+          }
+
+          function addLabel(number, label) {
+            const { owner, name } = repo();
+            gh([
+              "api",
+              "--method",
+              "POST",
+              "repos/" + owner + "/" + name + "/issues/" + number + "/labels",
+              "-f",
+              "labels[]=" + label,
+            ]);
+            console.log("added " + label + " to #" + number);
+          }
+
+          function removeLabel(number, label) {
+            const { owner, name } = repo();
+            try {
+              gh([
+                "api",
+                "--method",
+                "DELETE",
+                "repos/" + owner + "/" + name + "/issues/" + number + "/labels/" +
+                  encodeURIComponent(label),
+              ]);
+            } catch (error) {
+              const detail = String(error.stderr || error.message);
+              if (
+                !/\(HTTP 404\)/.test(detail) ||
+                !/Label (does not exist|not found)/i.test(detail)
+              ) throw error;
+              console.log("skipped already-removed " + label + " on #" + number);
+              return;
+            }
+            console.log("removed " + label + " from #" + number);
+          }
+
+          function applyLabels(number, current, change) {
+            for (const label of change.remove || [])
+              if (current.has(label)) removeLabel(number, label);
+            for (const label of change.add || [])
+              if (!current.has(label)) addLabel(number, label);
+          }
+
+          function transition(change, expectedState) {
+            const live = liveIssue(change.number);
+            if (live.state !== expectedState) {
+              console.log(
+                "#" + change.number + " is " + live.state + ", not " + expectedState +
+                  "; leaving labels unchanged",
+              );
+              return;
+            }
+            applyLabels(change.number, live.labels, change);
+          }
+
+          function closingIssues(owner, name, number) {
+            const references = [];
+            let cursor = "";
+            for (;;) {
+              const args = [
+                "api",
+                "graphql",
+                "-f",
+                "query=" + CLOSING_QUERY,
+                "-f",
+                "owner=" + owner,
+                "-f",
+                "name=" + name,
+                "-F",
+                "number=" + number,
+              ];
+              if (cursor) args.push("-f", "cursor=" + cursor);
+              const payload = JSON.parse(gh(args));
+              const errors = (payload.errors || [])
+                .map((entry) => entry && entry.message)
+                .filter(Boolean);
+              if (errors.length) throw new Error("GraphQL failed: " + errors.join("; "));
+              const connection =
+                payload.data && payload.data.repository &&
+                payload.data.repository.pullRequest &&
+                payload.data.repository.pullRequest.closingIssuesReferences;
+              if (!connection)
+                throw new Error("GraphQL response missing closingIssuesReferences");
+              if (!Array.isArray(connection.nodes))
+                throw new Error("GraphQL response missing closingIssuesReferences nodes");
+              for (const node of connection.nodes) {
+                const login = node.repository && node.repository.owner && node.repository.owner.login;
+                const repoName = node.repository && node.repository.name;
+                if (login === owner && repoName === name)
+                  references.push({ number: node.number, state: node.state });
+              }
+              if (
+                !connection.pageInfo ||
+                typeof connection.pageInfo !== "object" ||
+                typeof connection.pageInfo.hasNextPage !== "boolean"
+              )
+                throw new Error("GraphQL pagination metadata was malformed");
+              if (connection.pageInfo.hasNextPage !== true) return references;
+              const next = connection.pageInfo.endCursor;
+              if (typeof next !== "string" || !next || next === cursor)
+                throw new Error("GraphQL pagination did not advance");
+              cursor = next;
+            }
+          }
+
+          function handleIssues(event) {
+            const issue = event.issue;
+            if (!issue || issue.pull_request) return;
+            if (event.action === "opened") {
+              const live = liveIssue(issue.number);
+              if (live.state !== "open") {
+                console.log(
+                  "#" + issue.number + " is " + live.state + ", not open; leaving labels unchanged",
+                );
+                return;
+              }
+              if (HUMAN_STATES.some((label) => live.labels.has(label))) {
+                console.log("#" + issue.number + " already has a human state; leaving it unchanged");
+                return;
+              }
+              applyLabels(issue.number, live.labels, { add: [REVIEW], remove: [] });
+            } else if (event.action === "reopened") {
+              transition({ number: issue.number, add: [REVIEW], remove: [APPROVED, IN_PROGRESS] }, "open");
+            } else if (event.action === "closed") {
+              transition({ number: issue.number, add: [], remove: [REVIEW, APPROVED, IN_PROGRESS] }, "closed");
+            }
+          }
+
+          function handlePullRequest(event) {
+            const pr = event.pull_request;
+            if (!pr) return;
+            const head = pr.head && pr.head.repo && pr.head.repo.full_name;
+            if (!head || head !== event.repository.full_name) {
+              console.log("skipping pull request from a fork");
+              return;
+            }
+            if (pr.draft) {
+              console.log("skipping draft pull request");
+              return;
+            }
+            const owner = event.repository.owner.login;
+            const name = event.repository.name;
+            for (const reference of closingIssues(owner, name, pr.number)) {
+              if (reference.state !== "OPEN") continue;
+              const live = liveIssue(reference.number);
+              if (live.state !== "open") continue;
+              if (!live.labels.has(APPROVED)) continue;
+              if (
+                live.labels.has(BLOCKED) ||
+                live.labels.has(NEEDS_INFO) ||
+                live.labels.has(NEEDS_DESIGN)
+              )
+                continue;
+              applyLabels(reference.number, live.labels, {
+                add: [IN_PROGRESS],
+                remove: [REVIEW],
+              });
+            }
+          }
+
+          const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+          if (process.env.GITHUB_EVENT_NAME === "pull_request") handlePullRequest(event);
+          else if (process.env.GITHUB_EVENT_NAME === "issues") handleIssues(event);
+          else console.log("unsupported event: " + process.env.GITHUB_EVENT_NAME);
+          NODE

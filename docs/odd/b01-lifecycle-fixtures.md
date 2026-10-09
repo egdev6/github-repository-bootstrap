@@ -41,10 +41,10 @@ visible so none is quietly retired:
 | 2791–2845 | issue workflow defaults on for issue forms; canonical status labels | U5 |
 | 2847–2939 | source/destination hashes invalidate the plan; symlink preflight | U5 |
 | 2941–2967 | opt-out leaves legacy templates untouched; README example matches | U5 |
-| 3121–3157 | opened adds review only with no live human state; live payload | U3b |
-| 3159–3221 | reopened/closed touch only the review states | U3b |
-| 3310–3343 | stale events use the live issue state | U3b |
-| 3386–3403 | static, least-privilege, no checkout, fork-safe | U3b |
+| 3121–3157 | opened adds review only with no live human state; live payload | U3b delivered |
+| 3159–3221 | reopened/closed touch only the review states | U3b delivered |
+| 3310–3343 | stale events use the live issue state | U3b delivered |
+| 3386–3403 | static, least-privilege, no checkout, fork-safe | U3b delivered |
 | 3223–3260 | approved same-repo references across pages | U3c |
 | 3262–3308 | fork/draft/blocked/unapproved skipped; API error fails loudly | U3c |
 | 3345–3369 | narrow 404 tolerated, 403 not | U3c |
@@ -52,8 +52,9 @@ visible so none is quietly retired:
 | 3405–3434 | malformed closing-issue pagination fails loudly | U3c |
 
 U3b/U3c must bind these cases to the real scripts and validate the event label
-states; they must not drop any row. The U5/U3b/U3c rows are planned deliveries,
-not done, and U3a adds no script-availability flag. Additional U3c guard cases
+states; they must not drop any row. The U5/U3c rows are still planned
+deliveries, the four U3b rows are now bound in `lifecycle-issues.test.mjs`, and
+U3a adds no script-availability flag. Additional U3c guard cases
 are still needed: GraphQL `errors`, a cyclic cursor A→B→A, duplicate refs, an
 unsupported action/event, and a malformed repository. Those require the real
 script and are **not** claimed available in U3a.
@@ -67,3 +68,6 @@ script and are **not** claimed available in U3a.
   `RangeError`).
 - GREEN + TRIANGULATE: the implemented helper passes the focused file (15/15)
   and the full suite, including the added negative cases.
+- U3b `lifecycle-issues.test.mjs`: 5 focused tests binding the four U3b rows to
+  the inert packaged asset. RED was the truthful-header assertion; the
+  behavioral cases are preimplemented donor logic. GREEN focused 5/5.
