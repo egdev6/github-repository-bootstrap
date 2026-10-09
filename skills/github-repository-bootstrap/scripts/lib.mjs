@@ -228,6 +228,9 @@ export function validationErrors(config) {
     }
   }
 
+  const reservedTemplateDestinations = fixedTemplateDestinations(
+    config.templates,
+  );
   if (
     config.files !== undefined &&
     resourceMap(config.files, "$.files", LIMITS.files)
@@ -238,6 +241,16 @@ export function validationErrors(config) {
           `$.files.${destination}`,
           "must be a repository-relative path without traversal",
         );
+      else {
+        const reserved = reservedTemplateDestinations.find((fixed) =>
+          destinationsCollide(destination, fixed),
+        );
+        if (reserved)
+          add(
+            `$.files.${destination}`,
+            `must not create an ownership collision with the fixed template destination ${JSON.stringify(reserved)}`,
+          );
+      }
       if (!object(file, `$.files.${destination}`)) continue;
       known(file, `$.files.${destination}`, ["source", "mode"]);
       if (!isRepositoryRelativePath(file.source))
@@ -614,6 +627,55 @@ function isRepositoryRelativePath(value) {
     !path.win32.isAbsolute(value) &&
     value.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
   );
+}
+
+// Fixed template destinations are owned by the template installer. A generic
+// `files` entry may not target the same path, an ancestor, or a descendant, or
+// both modules would claim one path. The comparison is lexical and host-aware
+// (host separators plus case folding on case-insensitive hosts); it never
+// resolves symlinks, hard links, or every alias a case-insensitive volume can
+// present, and POSIX case sensitivity is preserved.
+const CASE_INSENSITIVE_FILESYSTEM =
+  process.platform === "win32" || process.platform === "darwin";
+
+function collisionSegments(relativePath) {
+  const segments = path.normalize(relativePath).split(path.sep).filter(Boolean);
+  return CASE_INSENSITIVE_FILESYSTEM
+    ? segments.map((segment) => segment.toLowerCase())
+    : segments;
+}
+
+function isSameOrAncestorPath(ancestor, descendant) {
+  return (
+    ancestor.length <= descendant.length &&
+    ancestor.every((segment, index) => segment === descendant[index])
+  );
+}
+
+function destinationsCollide(left, right) {
+  const leftSegments = collisionSegments(left);
+  const rightSegments = collisionSegments(right);
+  return (
+    isSameOrAncestorPath(leftSegments, rightSegments) ||
+    isSameOrAncestorPath(rightSegments, leftSegments)
+  );
+}
+
+// Only the current fixed template selection is reserved. A malformed
+// `templates` container contributes no reservation instead of throwing.
+function fixedTemplateDestinations(templates) {
+  if (!templates || Array.isArray(templates) || typeof templates !== "object")
+    return [];
+  const destinations = [".github/ISSUE_TEMPLATE/config.yml"];
+  const issueForms = Array.isArray(templates.issueForms)
+    ? templates.issueForms
+    : [];
+  for (const name of issueForms)
+    if (TEMPLATE_NAMES.has(name))
+      destinations.push(`.github/ISSUE_TEMPLATE/${name}.yml`);
+  if (templates.pullRequest === true)
+    destinations.push(".github/pull_request_template.md");
+  return destinations;
 }
 
 function isWithin(root, target) {
