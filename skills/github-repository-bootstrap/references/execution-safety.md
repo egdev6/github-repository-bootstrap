@@ -1,6 +1,6 @@
 # Execution Safety
 
-Read this before planning or applying. It carries the executor detail that [`SKILL.md`](../SKILL.md) summarizes. `scripts/bootstrap.mjs` and `scripts/lib.mjs` remain the execution authority; this reference never overrides them and never adds schema fields, selection flags, or approval flags.
+Read this before planning or applying. It carries the executor detail that [`SKILL.md`](../SKILL.md) summarizes. `scripts/bootstrap.mjs`, `scripts/command-transport.mjs`, and `scripts/lib.mjs` remain the execution authority; this reference never overrides them and never adds schema fields, selection flags, or approval flags.
 
 ## Generic Repository Files
 
