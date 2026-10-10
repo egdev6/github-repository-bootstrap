@@ -156,7 +156,9 @@ function templates(mode) {
 }
 
 function withNativeContext(templateConfig, scenario, options = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bootstrap-fixed-template-renderer-"));
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "bootstrap-fixed-template-renderer-")),
+  );
   const repository = path.join(directory, "repository");
   const bin = path.join(directory, "bin");
   const configPath = path.join(directory, "config.json");
