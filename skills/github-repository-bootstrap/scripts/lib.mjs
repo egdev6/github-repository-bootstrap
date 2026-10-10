@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
 
 const TYPES = new Set(["TEXT", "NUMBER", "DATE", "SINGLE_SELECT"]);
 const LAYOUTS = new Set(["BOARD", "TABLE"]);
@@ -666,16 +667,14 @@ function destinationsCollide(left, right) {
 function fixedTemplateDestinations(templates) {
   if (!templates || Array.isArray(templates) || typeof templates !== "object")
     return [];
-  const destinations = [".github/ISSUE_TEMPLATE/config.yml"];
   const issueForms = Array.isArray(templates.issueForms)
     ? templates.issueForms
     : [];
+  const selected = [];
   for (const name of issueForms)
     if (TEMPLATE_NAMES.has(name))
-      destinations.push(`.github/ISSUE_TEMPLATE/${name}.yml`);
-  if (templates.pullRequest === true)
-    destinations.push(".github/pull_request_template.md");
-  return destinations;
+      selected.push(`.github/ISSUE_TEMPLATE/${name}.yml`);
+  return fixedTemplatePaths(selected, templates.pullRequest === true);
 }
 
 function isWithin(root, target) {
