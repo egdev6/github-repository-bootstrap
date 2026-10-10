@@ -24,6 +24,7 @@ import {
   writeTemplateFile,
 } from "./lib.mjs";
 import { resolveCommand, run } from "./command-transport.mjs";
+import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
 
 export { resolveCommand, run };
 
@@ -148,15 +149,12 @@ function validateLocalTarget(config, repoDir) {
 
 function configuredTemplateDestinations(config) {
   if (!config.templates) return [];
-  return [
-    ".github/ISSUE_TEMPLATE/config.yml",
+  const issueFormDestinations = [
     ...config.templates.issueForms.map((name) =>
       path.posix.join(".github/ISSUE_TEMPLATE", `${name}.yml`),
     ),
-    ...(config.templates.pullRequest
-      ? [".github/pull_request_template.md"]
-      : []),
   ];
+  return fixedTemplatePaths(issueFormDestinations, config.templates.pullRequest);
 }
 
 function localTemplatePaths(config, repoDir) {
