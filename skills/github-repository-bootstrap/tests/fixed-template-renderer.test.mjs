@@ -489,8 +489,11 @@ test("template-absent native authorization retains the legacy observation shape"
       },
     };
     const origin = "https://github.com/acme-org/widgets.git";
+    const repositoryRoot = execFileSync("git", [
+      "-C", context.repository, "rev-parse", "--show-toplevel",
+    ], { encoding: "utf8" }).trim();
     const target = {
-      repoDir: fs.realpathSync(context.repository), origin,
+      repoDir: fs.realpathSync(repositoryRoot), origin,
       normalizedOrigin: normalizeGitHubOrigin(origin), repository: "acme-org/widgets",
     };
     const config = normalizeConfig(JSON.parse(fs.readFileSync(context.configPath, "utf8")));
