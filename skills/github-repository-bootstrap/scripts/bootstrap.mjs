@@ -25,6 +25,7 @@ import {
 } from "./lib.mjs";
 import { resolveCommand, run } from "./command-transport.mjs";
 import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
+import { fixedTemplateDescriptors, renderFixedTemplate } from "./fixed-template-renderer.mjs";
 
 export { resolveCommand, run };
 
@@ -414,22 +415,13 @@ function discover(config, repoDir) {
 
 function installTemplates(config, repoDir, report) {
   if (!config.templates) return;
-  const templateFiles = [
-    {
-      source: sourceTemplate("config.yml"),
-      target: path.join(repoDir, ".github", "ISSUE_TEMPLATE", "config.yml"),
-    },
-    ...config.templates.issueForms.map((name) => ({
-      source: sourceTemplate(`${name}.yml`),
-      target: path.join(repoDir, ".github", "ISSUE_TEMPLATE", `${name}.yml`),
-      labels: name,
-    })),
-  ];
-  if (config.templates.pullRequest)
-    templateFiles.push({
-      source: sourceTemplate("pull_request_template.md"),
-      target: path.join(repoDir, ".github", "pull_request_template.md"),
-    });
+  const templateFiles = fixedTemplateDescriptors(config.templates).map(
+    (descriptor) => ({
+      source: sourceTemplate(descriptor.source),
+      target: path.join(repoDir, descriptor.target),
+      labelKey: descriptor.labelKey,
+    }),
+  );
   for (const template of templateFiles) {
     const relativeTarget = path.relative(
       path.resolve(repoDir),
@@ -444,15 +436,11 @@ function installTemplates(config, repoDir, report) {
       });
       continue;
     }
-    const source = fs.readFileSync(template.source, "utf8");
-    const content = template.labels
-      ? source.replace(
-          "__LABELS__",
-          JSON.stringify(
-            config.templates.issueFormLabels[template.labels] ?? [],
-          ),
-        )
-      : source;
+    const content = renderFixedTemplate(
+      fs.readFileSync(template.source, "utf8"),
+      template.labelKey,
+      config.templates.issueFormLabels,
+    );
     writeTemplateFile(repoDir, relativeTarget, content);
     report.completed.push({
       resource: "template",
