@@ -25,7 +25,7 @@ import {
 } from "./lib.mjs";
 import { resolveCommand, run } from "./command-transport.mjs";
 import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
-import { fixedTemplateDescriptors, renderFixedTemplate } from "./fixed-template-renderer.mjs";
+import { captureFixedTemplates, fixedTemplateState, verifyFixedTemplates } from "./fixed-template-state.mjs";
 
 export { resolveCommand, run };
 
@@ -285,6 +285,9 @@ function discoverFields(project) {
 
 function discover(config, repoDir) {
   requireGh();
+  const templateStates = config.templates
+    ? fixedTemplateState(captureFixedTemplates(config.templates, repoDir, sourceTemplate("")))
+    : undefined;
   const headerResponse = run("gh", ["api", "-i", "user"]);
   const scopes = parseOAuthScopes(headerResponse);
   const missingScopes = config.requiredScopes.filter(
@@ -347,6 +350,7 @@ function discover(config, repoDir) {
       labels,
       milestones,
       templates: localTemplatePaths(config, repoDir),
+      ...(templateStates === undefined ? {} : { templateStates }),
       files: managedFileStates(config, repoDir),
       project: null,
       fields: [],
@@ -397,6 +401,7 @@ function discover(config, repoDir) {
     labels,
     milestones,
     templates: localTemplatePaths(config, repoDir),
+    ...(templateStates === undefined ? {} : { templateStates }),
     files: managedFileStates(config, repoDir),
     project,
     fields,
@@ -413,20 +418,13 @@ function discover(config, repoDir) {
   };
 }
 
-function installTemplates(config, repoDir, report) {
+function installTemplates(config, repoDir, report, expected) {
   if (!config.templates) return;
-  const templateFiles = fixedTemplateDescriptors(config.templates).map(
-    (descriptor) => ({
-      source: sourceTemplate(descriptor.source),
-      target: path.join(repoDir, descriptor.target),
-      labelKey: descriptor.labelKey,
-    }),
+  const templateFiles = verifyFixedTemplates(
+    config.templates, repoDir, sourceTemplate(""), expected,
   );
   for (const template of templateFiles) {
-    const relativeTarget = path.relative(
-      path.resolve(repoDir),
-      template.target,
-    );
+    const relativeTarget = path.normalize(template.target);
     const { exists } = templateDestination(repoDir, relativeTarget);
     if (exists && config.templates.mode === "ensure") {
       report.skipped.push({
@@ -436,12 +434,7 @@ function installTemplates(config, repoDir, report) {
       });
       continue;
     }
-    const content = renderFixedTemplate(
-      fs.readFileSync(template.source, "utf8"),
-      template.labelKey,
-      config.templates.issueFormLabels,
-    );
-    writeTemplateFile(repoDir, relativeTarget, content);
+    writeTemplateFile(repoDir, relativeTarget, template.content);
     report.completed.push({
       resource: "template",
       target: relativeTarget,
@@ -813,11 +806,13 @@ function main() {
       printReport(report);
     } else {
       preflightTemplateDestinations(config, target.repoDir, () => {
+        if (config.templates)
+          verifyFixedTemplates(config.templates, target.repoDir, sourceTemplate(""), observed.templateStates);
         installManagedFiles(config, target.repoDir, observed.files, report);
         applyLabels(config, observed, report);
       });
       applyMilestones(config, observed, report);
-      installTemplates(config, target.repoDir, report);
+      installTemplates(config, target.repoDir, report, observed.templateStates);
       if (!config.project) {
         report.success = true;
         printReport(report);

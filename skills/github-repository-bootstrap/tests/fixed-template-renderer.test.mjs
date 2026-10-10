@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { authorizationValue, normalizeConfig, normalizeGitHubOrigin } from "../scripts/lib.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +12,8 @@ import {
   renderFixedTemplate,
 } from "../scripts/fixed-template-renderer.mjs";
 import { installGhFixture, runBootstrapCli } from "./helpers/native-cli-fixtures.mjs";
+
+import { captureFixedTemplates, fixedTemplateState, verifyFixedTemplates } from "../scripts/fixed-template-state.mjs";
 
 const skillRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -151,7 +155,7 @@ function templates(mode) {
   };
 }
 
-function withNativeContext(templateConfig, scenario) {
+function withNativeContext(templateConfig, scenario, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bootstrap-fixed-template-renderer-"));
   const repository = path.join(directory, "repository");
   const bin = path.join(directory, "bin");
@@ -174,12 +178,17 @@ function withNativeContext(templateConfig, scenario) {
       labels: { "type:bug": { color: "D73A4A" } },
     };
     if (templateConfig) config.templates = templateConfig;
+    options.configure?.(config);
     fs.writeFileSync(configPath, JSON.stringify(config));
     installGhFixture(bin, GH_REPLIES);
-    const context = { directory, repository, bin, configPath, logPath };
+    const activeSkill = options.copySkill ? path.join(directory, "skill") : skillRoot;
+    if (options.copySkill)
+      for (const name of ["scripts", "assets"])
+        fs.cpSync(path.join(skillRoot, name), path.join(activeSkill, name), { recursive: true });
+    const context = { directory, repository, bin, configPath, logPath, skillRoot: activeSkill };
     return scenario(context, (mode, authorize) =>
       runBootstrapCli({
-        skillRoot,
+        skillRoot: activeSkill,
         bin,
         configPath,
         repository,
@@ -295,4 +304,264 @@ test("native template-absent config performs no template work", () => {
     );
     assertNoRemoteWrites(context);
   });
+});
+
+const byteHash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const assetRoot = (context) => path.join(context.skillRoot, "assets", "templates");
+
+function successfulPlan(run) {
+  const result = run("plan");
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.success, true);
+  return report;
+}
+
+function rejectedApply(run, authorization, message, completed = [], skipped = []) {
+  const result = run("apply", authorization);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.success, false);
+  assert.deepEqual(report.failures, [{ message }]);
+  assert.deepEqual(report.completed, completed);
+  assert.deepEqual(report.skipped, skipped);
+  return report;
+}
+
+test("fixed-template state hashes every raw asset, rendered payload and destination", () => {
+  withNativeContext(templates("replace"), (context) => {
+    const destination = path.join(context.repository, TARGETS.bug_report);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    const rawDestination = Buffer.from([0xff, 0x0a]);
+    fs.writeFileSync(destination, rawDestination);
+    const records = captureFixedTemplates(templates("replace"), context.repository, assetRoot(context));
+    const golden = goldenTemplates();
+    const expected = expectedDescriptors(FORMS, true).map((descriptor) => ({
+      ...descriptor,
+      sourceHash: byteHash(fs.readFileSync(path.join(assetRoot(context), descriptor.source))),
+      renderedHash: byteHash(Buffer.from(golden.get(descriptor.target), "utf8")),
+      destinationHash: descriptor.target === TARGETS.bug_report ? byteHash(rawDestination) : null,
+    }));
+    assert.deepEqual(fixedTemplateState(records), expected);
+    for (const record of records) assert.equal(record.content, golden.get(record.target));
+    assert.deepEqual(
+      verifyFixedTemplates(templates("replace"), context.repository, assetRoot(context), expected),
+      records,
+    );
+    assert.deepEqual(fs.readFileSync(destination), rawDestination);
+    for (const source of ["config.yml", "bug_report.yml", "feature_request.yml", "pull_request_template.md"]) {
+      const file = path.join(assetRoot(context), source);
+      const before = fs.readFileSync(file);
+      fs.writeFileSync(file, Buffer.concat([before, Buffer.from("drift")]));
+      assert.throws(
+        () => verifyFixedTemplates(templates("replace"), context.repository, assetRoot(context), expected),
+        { message: "Fixed template source or destination changed after authorization" },
+      );
+      fs.writeFileSync(file, before);
+    }
+  }, { copySkill: true });
+});
+
+test("native authorization rejects same-rendered raw source drift for every asset", () => {
+  for (const mode of ["ensure", "replace"])
+    for (const source of ["config.yml", "bug_report.yml", "feature_request.yml", "pull_request_template.md"])
+      withNativeContext(templates(mode), (context, run) => {
+        const file = path.join(assetRoot(context), source);
+        const base = fs.readFileSync(file);
+        const first = Buffer.concat([base, Buffer.from([0xff])]);
+        const second = Buffer.concat([base, Buffer.from([0xfe])]);
+        fs.writeFileSync(file, first);
+        const plan = successfulPlan(run);
+        fs.writeFileSync(file, second);
+        assert.equal(first.toString("utf8"), second.toString("utf8"));
+        assert.notEqual(byteHash(first), byteHash(second));
+        const report = rejectedApply(run, plan.authorization.value,
+          "apply authorization does not match the exact reviewed canonical plan");
+        assert.equal(report.authorization.authorized, false);
+        assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+        assert.deepEqual(fs.readFileSync(file), second);
+        assertNoRemoteWrites(context);
+        planAndApply(run);
+        for (const relative of TEMPLATE_ORDER)
+          assert.equal(readTemplate(context, relative), goldenTemplates().get(relative) +
+            (path.posix.basename(relative) === source ? "\uFFFD" : ""));
+        assertNoRemoteWrites(context);
+      }, { copySkill: true });
+});
+
+test("native destination byte drift rejects before mutations in both modes", () => {
+  for (const mode of ["ensure", "replace"])
+    for (const relative of TEMPLATE_ORDER)
+      withNativeContext(templates(mode), (context, run) => {
+        const file = path.join(context.repository, relative);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const first = Buffer.from([0xff]);
+        const second = Buffer.from([0xfe]);
+        fs.writeFileSync(file, first);
+        const plan = successfulPlan(run);
+        fs.writeFileSync(file, second);
+        const report = rejectedApply(run, plan.authorization.value,
+          "apply authorization does not match the exact reviewed canonical plan");
+        assert.equal(report.authorization.authorized, false);
+        assert.deepEqual(fs.readFileSync(file), second);
+        for (const other of TEMPLATE_ORDER.filter((entry) => entry !== relative))
+          assert.equal(fs.existsSync(path.join(context.repository, other)), false);
+        assertNoRemoteWrites(context);
+        planAndApply(run);
+        const golden = goldenTemplates();
+        assert.equal(readTemplate(context, relative),
+          mode === "ensure" ? second.toString("utf8") : golden.get(relative));
+        for (const other of TEMPLATE_ORDER.filter((entry) => entry !== relative))
+          assert.equal(readTemplate(context, other), golden.get(other));
+        assertNoRemoteWrites(context);
+      }, { copySkill: true });
+});
+
+test("native non-regular assets and destinations fail before mutations", () => {
+  for (const kind of ["source", "destination"])
+    withNativeContext(templates("ensure"), (context, run) => {
+      const file = kind === "source"
+        ? path.join(assetRoot(context), "config.yml")
+        : path.join(context.repository, TARGETS.config);
+      if (kind === "source") fs.unlinkSync(file);
+      fs.mkdirSync(file, { recursive: true });
+      const result = run("plan");
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, "");
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.success, false);
+      assert.deepEqual(report.completed, []);
+      assert.deepEqual(report.skipped, []);
+      assert.deepEqual(report.failures, [{ message:
+        "Template " + kind + " is not a regular file: " +
+        (kind === "source" ? "config.yml" : TARGETS.config) }]);
+      assert.equal(fs.lstatSync(file).isDirectory(), true);
+      for (const other of TEMPLATE_ORDER.filter((entry) => entry !== TARGETS.config))
+        assert.equal(fs.existsSync(path.join(context.repository, other)), false);
+    }, { copySkill: true });
+});
+
+test("late native byte drift preserves the mocked label result without template writes", () => {
+  withNativeContext(templates("replace"), (context, run) => {
+    const file = path.join(assetRoot(context), "config.yml");
+    const changed = Buffer.concat([fs.readFileSync(file), Buffer.from("late drift")]);
+    const command = "api --method POST repos/acme-org/widgets/labels -f name=type:probe -f color=000000 -f description=";
+    installGhFixture(context.bin, {
+      ...GH_REPLIES,
+      [command]: { stdout: "{}", write: { file, base64: changed.toString("base64") } },
+    });
+    const plan = successfulPlan(run);
+    const report = rejectedApply(run, plan.authorization.value,
+      "Fixed template source or destination changed after authorization",
+      [{ resource: "label", target: "type:probe", action: "create" }],
+      [{
+        resource: "label", target: "type:bug",
+        reason: "existing label is unmanaged or already matches",
+      }]);
+    assert.equal(report.authorization.authorized, true);
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+    assert.deepEqual(fs.readFileSync(file), changed);
+    const calls = fs.readFileSync(context.logPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line).join(" "));
+    assert.equal(calls.filter((call) => call === command).length, 1);
+    for (const call of calls)
+      assert.ok(call === command || Object.hasOwn(GH_REPLIES, call), call);
+  }, {
+    copySkill: true,
+    configure: (config) => { config.labels["type:probe"] = { color: "000000" }; },
+  });
+});
+
+test("template-absent native authorization retains the legacy observation shape", () => {
+  withNativeContext(null, (context, run) => {
+    const plan = successfulPlan(run);
+    const observed = {
+      labels: [{ name: "type:bug", color: "D73A4A", description: "" }],
+      milestones: [], templates: [], files: [], project: null, fields: [], views: [],
+      viewsSupported: undefined, repositoryId: "R_1",
+      validation: {
+        authenticatedAccount: "maintainer", configuredAccountType: "Organization",
+        repository: "acme-org/widgets", repositoryId: "R_1", grantedScopes: ["repo"],
+      },
+    };
+    const origin = "https://github.com/acme-org/widgets.git";
+    const target = {
+      repoDir: fs.realpathSync(context.repository), origin,
+      normalizedOrigin: normalizeGitHubOrigin(origin), repository: "acme-org/widgets",
+    };
+    const config = normalizeConfig(JSON.parse(fs.readFileSync(context.configPath, "utf8")));
+    assert.equal(plan.authorization.value, authorizationValue({ config, target, observed, plan: plan.plan }));
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+    assertNoRemoteWrites(context);
+  });
+});
+
+test("fixed-template capture rejects missing sources and destination ancestor links", () => {
+  withNativeContext(templates("replace"), (context) => {
+    const file = path.join(assetRoot(context), "config.yml");
+    fs.unlinkSync(file);
+    assert.throws(
+      () => captureFixedTemplates(templates("replace"), context.repository, assetRoot(context)),
+      { code: "ENOENT" },
+    );
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+  }, { copySkill: true });
+  withNativeContext(templates("replace"), (context, run) => {
+    const outside = path.join(context.directory, "outside");
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(context.repository, ".github"), "junction");
+    const result = run("plan");
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, false);
+    assert.deepEqual(report.completed, []);
+    assert.deepEqual(report.skipped, []);
+    assert.deepEqual(report.failures, [{
+      message: "Template destination contains a symbolic link: " + TARGETS.config,
+    }]);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  });
+});
+
+test("native source symlinks fail closed", { skip: process.platform === "win32" }, () => {
+  withNativeContext(templates("replace"), (context, run) => {
+    const file = path.join(assetRoot(context), "config.yml");
+    fs.unlinkSync(file);
+    fs.symlinkSync(path.join(assetRoot(context), "bug_report.yml"), file);
+    const result = run("plan");
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, false);
+    assert.deepEqual(report.completed, []);
+    assert.deepEqual(report.skipped, []);
+    assert.deepEqual(report.failures, [{
+      message: "Template source is not a regular file: config.yml",
+    }]);
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+  }, { copySkill: true });
+});
+
+test("early capture drift fails before the first mutation with reviewed authorization", () => {
+  withNativeContext(templates("replace"), (context, run) => {
+    const file = path.join(assetRoot(context), "config.yml");
+    const changed = Buffer.concat([fs.readFileSync(file), Buffer.from("early drift")]);
+    const plan = successfulPlan(run);
+    installGhFixture(context.bin, {
+      ...GH_REPLIES,
+      "api user": {
+        stdout: GH_REPLIES["api user"],
+        write: { file, base64: changed.toString("base64") },
+      },
+    });
+    const report = rejectedApply(run, plan.authorization.value,
+      "Fixed template source or destination changed after authorization");
+    assert.equal(report.authorization.authorized, true);
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+    assert.deepEqual(fs.readFileSync(file), changed);
+    assertNoRemoteWrites(context);
+  }, { copySkill: true });
 });
