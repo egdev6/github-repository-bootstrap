@@ -1,37 +1,20 @@
 // Capture bytes for the native fixed-template authorization boundary.
 // Called only after native configuration validation; no general asset discovery.
-import { createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { canonicalJson, templateDestination } from "./lib.mjs";
+import { canonicalJson } from "./lib.mjs";
 import { fixedTemplateDescriptors, renderFixedTemplate } from "./fixed-template-renderer.mjs";
-
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+import { captureTemplateDescriptors, templateState } from "./template-state.mjs";
 
 export function captureFixedTemplates(templates, repoDir, assets) {
-  return fixedTemplateDescriptors(templates).map((descriptor) => {
-    const source = path.join(assets, descriptor.source);
-    if (!fs.lstatSync(source).isFile())
-      throw new Error("Template source is not a regular file: " + descriptor.source);
-    const raw = fs.readFileSync(source);
-    const content = renderFixedTemplate(
-      raw.toString("utf8"), descriptor.labelKey, templates.issueFormLabels,
-    );
-    const destination = templateDestination(repoDir, descriptor.target);
-    if (destination.exists && !fs.lstatSync(destination.target).isFile())
-      throw new Error("Template destination is not a regular file: " + descriptor.target);
-    return {
-      ...descriptor,
-      sourceHash: hash(raw),
-      renderedHash: hash(Buffer.from(content, "utf8")),
-      destinationHash: destination.exists ? hash(fs.readFileSync(destination.target)) : null,
-      content,
-    };
-  });
+  return captureTemplateDescriptors(
+    fixedTemplateDescriptors(templates), repoDir, assets,
+    (raw, descriptor) => renderFixedTemplate(
+      raw, descriptor.labelKey, templates.issueFormLabels,
+    ),
+  );
 }
 
 export function fixedTemplateState(records) {
-  return records.map(({ content, ...metadata }) => metadata);
+  return templateState(records);
 }
 
 export function verifyFixedTemplates(templates, repoDir, assets, expected) {
