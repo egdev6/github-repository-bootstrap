@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +30,7 @@ import {
   writeManagedFile,
   writeTemplateFile,
 } from "../scripts/lib.mjs";
+import { installGhFixture, runBootstrapCli } from "./helpers/native-cli-fixtures.mjs";
 
 const configuration = {
   account: "egdev6",
@@ -82,59 +83,6 @@ function preparedWrite(repository, kind, target = ".github/managed.yml") {
   return () => writeManagedFile(file);
 }
 
-/** Install a PATH-visible `gh` stub. Windows requires a real .exe (no .cmd/.bat). */
-function installGhStub(bin, ghStubLogic) {
-  const scriptPath = path.join(bin, "gh-stub.cjs");
-  fs.writeFileSync(scriptPath, ghStubLogic);
-
-  if (process.platform !== "win32") {
-    fs.writeFileSync(
-      path.join(bin, "gh"),
-      `#!/usr/bin/env node\n${ghStubLogic}`,
-      { mode: 0o755 },
-    );
-    return;
-  }
-
-  const exePath = path.join(bin, "gh.exe");
-  const csPath = path.join(bin, "gh-launcher.cs");
-  // Stub args in these tests are simple tokens; only the script path needs quoting.
-  const source = `
-using System;
-using System.Diagnostics;
-class Program {
-  static int Main(string[] args) {
-    var psi = new ProcessStartInfo();
-    psi.FileName = ${JSON.stringify(process.execPath)};
-    psi.Arguments = ${JSON.stringify(`"${scriptPath}"`)};
-    foreach (var a in args) { psi.Arguments += " " + a; }
-    psi.UseShellExecute = false;
-    psi.RedirectStandardOutput = true;
-    psi.RedirectStandardError = true;
-    psi.RedirectStandardInput = true;
-    using (var p = Process.Start(psi)) {
-      Console.Write(p.StandardOutput.ReadToEnd());
-      Console.Error.Write(p.StandardError.ReadToEnd());
-      p.WaitForExit();
-      return p.ExitCode;
-    }
-  }
-}
-`;
-  fs.writeFileSync(csPath, source);
-
-  const csc = path.join(
-    process.env.WINDIR || "C:\\Windows",
-    "Microsoft.NET",
-    "Framework64",
-    "v4.0.30319",
-    "csc.exe",
-  );
-  execFileSync(csc, ["/nologo", `/out:${exePath}`, csPath], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
 test("minimal config disables omitted resource families without project API work", () => {
   const minimal = { account: "acme", repository: "acme/widgets" };
   assert.deepEqual(validationErrors(minimal), []);
@@ -176,35 +124,16 @@ test("minimal config disables omitted resource families without project API work
     execFileSync("git", ["init", repository], { stdio: "ignore" });
     execFileSync("git", ["-C", repository, "remote", "add", "origin", "https://github.com/acme/widgets.git"]);
     fs.writeFileSync(configPath, JSON.stringify(minimal));
-    const ghStubLogic = `const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(process.env.GH_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "--version") process.stdout.write("gh version test\\n");
-else if (args.join(" ") === "api -i user") process.stdout.write("HTTP/2 200\\nx-oauth-scopes: repo\\n");
-else if (args.join(" ") === "api users/acme") process.stdout.write('{"type":"Organization"}');
-else if (args.join(" ") === "api repos/acme/widgets") process.stdout.write('{"full_name":"acme/widgets","node_id":"R_1","owner":{"login":"acme"}}');
-else if (args.join(" ") === "api user") process.stdout.write('{"login":"maintainer"}');
-else process.exitCode = 1;
-`;
-    installGhStub(bin, ghStubLogic);
+    const ghReplies = {
+      "--version": "gh version test\n",
+      "api -i user": "HTTP/2 200\nx-oauth-scopes: repo\n",
+      "api users/acme": '{"type":"Organization"}',
+      "api repos/acme/widgets": '{"full_name":"acme/widgets","node_id":"R_1","owner":{"login":"acme"}}',
+      "api user": '{"login":"maintainer"}',
+    };
+    installGhFixture(bin, ghReplies);
     const run = (mode, authorize) =>
-      spawnSync(
-        process.execPath,
-        [
-          path.join(skillRoot, "scripts", "bootstrap.mjs"),
-          "--config",
-          configPath,
-          "--repo-dir",
-          repository,
-          "--mode",
-          mode,
-          ...(authorize ? ["--authorize", authorize] : []),
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GH_LOG: logPath },
-        },
-      );
+      runBootstrapCli({ skillRoot, bin, configPath, repository, mode, authorize, logPath });
     const planResult = run("plan");
     assert.equal(planResult.status, 0, planResult.stderr);
     const planReport = JSON.parse(planResult.stdout);
@@ -213,6 +142,33 @@ else process.exitCode = 1;
     assert.equal(JSON.parse(applyResult.stdout).success, true);
     const calls = fs.readFileSync(logPath, "utf8");
     assert.doesNotMatch(calls, /project|graphql|labels|milestones/i);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("native CLI gh fixture captures argv and fails closed on unknown calls", () => {
+  const temporaryDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "github-repository-bootstrap-gh-fixture-"),
+  );
+  try {
+    const bin = path.join(temporaryDirectory, "bin");
+    const logPath = path.join(temporaryDirectory, "gh.log");
+    fs.mkdirSync(bin);
+    const fixturesPath = installGhFixture(bin, { "--version": "gh version test\n" });
+    const gh = path.join(bin, process.platform === "win32" ? "gh.exe" : "gh");
+    const env = { ...process.env, GH_LOG: logPath, GH_FIXTURES: fixturesPath };
+    assert.equal(execFileSync(gh, ["--version"], { encoding: "utf8", env }), "gh version test\n");
+    assert.throws(
+      () => execFileSync(gh, ["api", "unexpected"], { encoding: "utf8", env }),
+      (error) => error.status === 1,
+    );
+    assert.equal(
+      fs.readFileSync(logPath, "utf8"),
+      '["--version"]\n["api","unexpected"]\n',
+    );
+    fs.writeFileSync(fixturesPath, "{not json");
+    assert.throws(() => execFileSync(gh, ["--version"], { encoding: "utf8", env }));
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
@@ -351,7 +307,6 @@ test("template destinations reject symbolic links and permit regular in-reposito
 
 test("descriptor-relative writes confine ancestor and missing-parent swaps", { skip: process.platform !== "linux" }, () => {
   const temporaryDirectory = fs.mkdtempSync(path.join(skillRoot, "tests", ".ancestor-swap-"));
-  const target = ".github/managed.yml";
   const confined = (kind, exists) => {
     const repository = path.join(temporaryDirectory, `${kind}-${exists}`);
     const outside = path.join(temporaryDirectory, `${kind}-${exists}-outside`);
