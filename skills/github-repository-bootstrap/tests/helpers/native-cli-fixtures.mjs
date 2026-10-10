@@ -16,8 +16,14 @@ const GH_STUB_ENGINE = `const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.GH_LOG, JSON.stringify(args) + "\\n");
 const replies = JSON.parse(fs.readFileSync(process.env.GH_FIXTURES, "utf8"));
-if (Object.hasOwn(replies, args.join(" "))) process.stdout.write(replies[args.join(" ")]);
-else process.exitCode = 1;
+if (Object.hasOwn(replies, args.join(" "))) {
+  const reply = replies[args.join(" ")];
+  if (typeof reply === "string") process.stdout.write(reply);
+  else {
+    if (reply.write) fs.writeFileSync(reply.write.file, Buffer.from(reply.write.base64, "base64"));
+    process.stdout.write(reply.stdout);
+  }
+} else process.exitCode = 1;
 `;
 
 /** Install the PATH-visible `gh` launcher for the Node/CJS stub script. */
