@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { templateDestination } from "./lib.mjs";
+import { canonicalJson, templateDestination } from "./lib.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -28,4 +28,10 @@ export function captureTemplateDescriptors(descriptors, repoDir, assets, render)
 
 export function templateState(records) {
   return records.map(({ content, ...metadata }) => metadata);
+}
+
+export function verifyTemplateRecords(records, expected, message) {
+  if (canonicalJson(templateState(records)) !== canonicalJson(expected))
+    throw new Error(message);
+  return records;
 }
