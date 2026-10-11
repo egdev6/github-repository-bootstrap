@@ -12,6 +12,7 @@ import {
   renderFixedTemplate,
 } from "../scripts/fixed-template-renderer.mjs";
 import { installGhFixture, runBootstrapCli } from "./helpers/native-cli-fixtures.mjs";
+import { PROJECT_CLI_CALLS, projectCliReplies } from "./helpers/project-cli-fixtures.mjs";
 
 import { captureFixedTemplates, fixedTemplateState, verifyFixedTemplates } from "../scripts/fixed-template-state.mjs";
 
@@ -182,12 +183,12 @@ function withNativeContext(templateConfig, scenario, options = {}) {
     if (templateConfig) config.templates = templateConfig;
     options.configure?.(config);
     fs.writeFileSync(configPath, JSON.stringify(config));
-    installGhFixture(bin, GH_REPLIES);
     const activeSkill = options.copySkill ? path.join(directory, "skill") : skillRoot;
     if (options.copySkill)
       for (const name of ["scripts", "assets"])
         fs.cpSync(path.join(skillRoot, name), path.join(activeSkill, name), { recursive: true });
     const context = { directory, repository, bin, configPath, logPath, skillRoot: activeSkill };
+    installGhFixture(bin, options.fixtures?.(context, config) ?? GH_REPLIES);
     return scenario(context, (mode, authorize) =>
       runBootstrapCli({
         skillRoot: activeSkill,
@@ -569,4 +570,132 @@ test("early capture drift fails before the first mutation with reviewed authoriz
     assert.deepEqual(fs.readFileSync(file), changed);
     assertNoRemoteWrites(context);
   }, { copySkill: true });
+});
+
+const PRESERVED_FIELD = { __typename: "ProjectV2Field", id: "F_OLD",
+  name: "Description", dataType: "TEXT" };
+const PRESERVED_VIEW = { id: "V_OLD", name: "Board", layout: "TABLE_LAYOUT" };
+const projectCliScenarios = [
+  { name: "existing exact linked Project" },
+  { name: "create and link in the same apply", missing: true },
+  { name: "link existing exact Project", unlinked: true },
+  { name: "preserve matching fields, differing existing views and unrelated resources",
+    fieldRows: [PRESERVED_FIELD, { ...PRESERVED_FIELD, id: "F_HUMAN", name: "Human notes" }],
+    viewRows: [PRESERVED_VIEW, { ...PRESERVED_VIEW, id: "V_HUMAN", name: "Human view" }], preserve: true },
+  { name: "bind selected visible field to view creation", visibleField: true,
+    fieldRows: [{ ...PRESERVED_FIELD, id: "F_VISIBLE", name: "Human notes" }] },
+  { name: "missing operator project scope", scopes: "repo", planFailure: true },
+  { name: "duplicate exact title", duplicateTitle: true, planFailure: true },
+  { name: "field node identity mismatch", fieldIdentity: true, planFailure: true },
+  { name: "view node identity mismatch", viewIdentity: true, planFailure: true },
+  { name: "incomplete field connection", fieldPagination: true, planFailure: true },
+  { name: "incomplete view connection", viewPagination: true, planFailure: true },
+  { name: "malformed field JSON", fieldJson: "not-json", planFailure: true },
+  { name: "unavailable field read", noFieldRead: true, planFailure: true },
+  { name: "unknown view permission error", viewJson: '{"errors":[{"message":"FORBIDDEN"}]}', planFailure: true },
+  { name: "known unavailable views remain a reported skip",
+    viewJson: '{"errors":[{"message":"Cannot query field views on type ProjectV2"}]}', unsupportedViews: true },
+  { name: "duplicate configured view identity", viewRows: [PRESERVED_VIEW, { ...PRESERVED_VIEW, id: "V_OTHER" }],
+    planFailure: true },
+  { name: "malformed created Project identity", missing: true, createJson: '{"id":"P_1"}', applyFailure: true },
+  { name: "link transport failure retains created Project", missing: true, linkFailure: true, applyFailure: true },
+  { name: "wrong linked repository node", missing: true, badLinkIdentity: true, applyFailure: true },
+  { name: "changed Project identity after linkage", missing: true, refreshIdentity: true, applyFailure: true },
+  { name: "existing field conflict requires reconciliation",
+    fieldRows: [{ ...PRESERVED_FIELD, dataType: "NUMBER" }], planFailure: true, fieldConflict: true },
+  { name: "field create failure", fieldFailure: true, applyFailure: true },
+  { name: "view create failure retains completed field", viewFailure: true, applyFailure: true },
+  { name: "unverifiable created view identity", viewMutation: "{}", applyFailure: true },
+];
+for (const scenario of projectCliScenarios) test("Project CLI: " + scenario.name, () => {
+  withNativeContext(null, (context, run) => {
+    const planResult = run("plan");
+    assert.equal(planResult.status, scenario.planFailure ? 1 : 0, planResult.stderr);
+    assert.equal(planResult.stderr, "");
+    const plan = JSON.parse(planResult.stdout);
+    assert.equal(plan.success, !scenario.planFailure);
+    assert.deepEqual(plan.completed, []);
+    const callsFromLog = () => fs.readFileSync(context.logPath, "utf8").trim().split("\n")
+      .map(line => JSON.parse(line).join(" "));
+    const mutationCalls = calls => calls.filter(call =>
+      [PROJECT_CLI_CALLS.create, PROJECT_CLI_CALLS.link, PROJECT_CLI_CALLS.field].includes(call) ||
+      call.startsWith(PROJECT_CLI_CALLS.view));
+    assert.deepEqual(mutationCalls(callsFromLog()), []);
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+    if (scenario.planFailure) {
+      assert.deepEqual(plan.skipped, []);
+      assert.ok(plan.failures.length > 0);
+      if (scenario.fieldConflict) assert.deepEqual(plan.failures, [{ message:
+        'Existing project field "Description" differs from managed configuration; reconcile it manually before bootstrap' }]);
+      return;
+    }
+    assert.equal(plan.discovered.project?.id ?? null, scenario.missing ? null : "P_1");
+    if (scenario.missing) assert.ok(plan.plan.some(row => row.resource === "project" && row.action === "create"));
+    const result = run("apply", plan.authorization.value);
+    assert.equal(result.status, scenario.applyFailure ? 1 : 0, result.stderr);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.success, !scenario.applyFailure);
+    assert.equal(report.authorization.authorized, true);
+    assert.equal(fs.existsSync(path.join(context.repository, ".github")), false);
+    const calls = callsFromLog();
+    for (const call of calls) assert.ok(Object.hasOwn(GH_REPLIES, call) ||
+      Object.values(PROJECT_CLI_CALLS).includes(call) ||
+      call === PROJECT_CLI_CALLS.view + " -F input[configuration][visibleFieldIds][]=F_VISIBLE", call);
+    assert.doesNotMatch(calls.join("\n"), /secret|issue-lifecycle|project-issue-sync/);
+    if (scenario.preserve) {
+      assert.deepEqual(mutationCalls(calls), []);
+      assert.deepEqual(report.completed, []);
+      assert.ok(report.skipped.some(row => row.resource === "project-field"));
+      assert.ok(report.skipped.some(row => row.resource === "project-view"));
+    } else if (!scenario.applyFailure) {
+      assert.ok(report.completed.some(row => row.resource === "project-field" && row.projectId === "P_1"));
+      assert.ok(calls.includes(PROJECT_CLI_CALLS.field));
+      if (!scenario.unsupportedViews) {
+        const expectedView = PROJECT_CLI_CALLS.view + (scenario.visibleField ?
+          " -F input[configuration][visibleFieldIds][]=F_VISIBLE" : "");
+        assert.ok(calls.includes(expectedView));
+        assert.ok(report.completed.some(row => row.resource === "project-view" && row.projectId === "P_1"));
+        assert.ok(calls.indexOf(PROJECT_CLI_CALLS.field) < calls.indexOf(expectedView));
+      }
+    }
+    if ((scenario.missing || scenario.unlinked) && !scenario.applyFailure) {
+      assert.equal(calls.filter(call => call === PROJECT_CLI_CALLS.link).length, 1);
+      assert.ok(report.completed.some(row => row.resource === "project-link" &&
+        row.projectId === "P_1" && row.projectNumber === 1));
+      assert.ok(calls.indexOf(PROJECT_CLI_CALLS.link) < calls.indexOf(PROJECT_CLI_CALLS.field));
+      if (scenario.missing) {
+        assert.equal(calls.filter(call => call === PROJECT_CLI_CALLS.create).length, 1);
+        assert.ok(calls.indexOf(PROJECT_CLI_CALLS.create) < calls.indexOf(PROJECT_CLI_CALLS.link));
+      }
+    }
+    if (scenario.unsupportedViews) {
+      assert.equal(report.discovered.viewsSupported, false);
+      assert.ok(report.skipped.some(row => row.resource === "project-view" &&
+        /capability is unavailable/.test(row.reason)));
+      assert.equal(calls.some(call => call.startsWith(PROJECT_CLI_CALLS.view)), false);
+    }
+    if (scenario.refreshIdentity) {
+      assert.deepEqual(report.failures, [{ message: "Project identity changed or was not linked after linkage" }]);
+      assert.ok(calls.includes(PROJECT_CLI_CALLS.refreshedFields));
+      assert.ok(calls.includes(PROJECT_CLI_CALLS.refreshedViews));
+      assert.deepEqual(mutationCalls(calls), [PROJECT_CLI_CALLS.create, PROJECT_CLI_CALLS.link]);
+      assert.equal(report.completed.some(row => ["project-link", "project-field", "project-view"].includes(row.resource)), false);
+    }
+    if (scenario.applyFailure) {
+      assert.ok(report.failures.length > 0);
+      assert.equal(report.completed.some(row => row.resource === "project-view"), false);
+      if (scenario.viewFailure || scenario.viewMutation)
+        assert.ok(report.completed.some(row => row.resource === "project-field"));
+      if (scenario.linkFailure || scenario.badLinkIdentity)
+        assert.ok(report.completed.some(row => row.resource === "project" && row.projectId === "P_1"));
+    }
+  }, {
+    configure: config => {
+      config.project = { title: "Roadmap", fields: { Description: { dataType: "TEXT" } },
+        views: { Board: { layout: "BOARD", ...(scenario.visibleField ?
+          { settings: { visibleFieldIds: ["F_VISIBLE"] } } : {}) } } };
+    },
+    fixtures: context => projectCliReplies(GH_REPLIES, path.join(context.bin, "gh-fixtures.json"), scenario),
+  });
 });
