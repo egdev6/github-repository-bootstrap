@@ -28,6 +28,14 @@ if (Object.hasOwn(replies, args.join(" "))) {
 
 /** Install the PATH-visible `gh` launcher for the Node/CJS stub script. */
 function installGhStub(bin, scriptPath) {
+  // The POSIX launcher is extensionless, so Node resolves its module type from
+  // the nearest ancestor `package.json`. Pin the CommonJS stub locally to stay
+  // immune to an ambient `"type": "module"` manifest above the fixture dir
+  // (for example the host temp directory).
+  fs.writeFileSync(
+    path.join(bin, "package.json"),
+    JSON.stringify({ type: "commonjs" }),
+  );
   if (process.platform !== "win32") {
     fs.writeFileSync(
       path.join(bin, "gh"),
