@@ -1,6 +1,6 @@
 # Adaptive Intake
 
-Build a manifest from facts, not defaults. Inspect the repository, remote, existing GitHub resources, and stack conventions first. Record each inference and its source. Ask only for values that cannot be established safely.
+Build a manifest from facts, not assumed governance. For new manifests, include the reviewed Code safety proposal by default unless the human opts out; never retrofit an existing manifest silently. Inspect the repository, remote, existing GitHub resources, and stack conventions first. Record each inference and its source. Ask only for values that cannot be established safely.
 
 ## Read-Only Reconciliation Gate
 
@@ -12,6 +12,7 @@ Run a read-only reconciliation before the final manifest and before `plan`. It i
 | Milestones | Declared milestones and existing milestones, with open/closed and due state. |
 | Files | Each `files` destination under the repository root, with presence and content hash. |
 | Fixed templates | `bug_report`, `feature_request`, and the pull-request template as they exist in `.github`. |
+| Code safety | When explicitly selected: presence and content of `.github/workflows/code-safety.yml`, the packaged source and the policy rendered from the reviewed manifest. |
 | Projects v2 | Whether a matching project is linked, plus its fields and views. |
 
 ## Classification
@@ -43,7 +44,7 @@ Rules:
 - Ask up to four questions per batch when Pi interactivity allows; keep resource values free-form and never force example names.
 - `apply` requires explicitly choosing `managed: true` or `mode: "replace"` and applies only the permitted settings in the proposal. Preserve everything outside the proposal, delete nothing, migrate no labels, and invent no CI.
 - `adapt` preserves existing names, colors, issue-form label mappings, project fields, and views.
-- `leave` is structural, never a runtime flag: omit the optional module (`labels`, `milestones`, `files`, `templates`, `project`) and re-plan. There is no CLI leave selector or intent flag. `managed: false` does not disable a module; it still creates missing resources and only gates updates of existing ones.
+- `leave` is structural, never a runtime flag: omit the optional module (`labels`, `milestones`, `files`, `templates`, `codeSafety`, `project`) and re-plan; Code safety also accepts explicit `false`. There is no CLI leave selector or intent flag. `managed: false` does not disable a module; it still creates missing resources and only gates updates of existing ones.
 - File and template modes stay exact: `ensure` creates missing and preserves existing; `replace` creates missing and updates differing bytes.
 - Unknown permissions or capability stop that module's decision; never reroute it into an overwrite.
 
@@ -93,6 +94,7 @@ Use open-ended questions for the intended repository outcome, ownership when dis
 - **Projects v2:** a `project` manifest enables project discovery, linkage, fields, views, Project scopes, and GraphQL. Omit it to disable all Projects v2 work.
 - **Files:** configure generic repository files through top-level `files`: each destination key and `source` must be repository-relative, regular, and confined to the actual repository root; each entry explicitly selects `ensure` or `replace`.
 - **Templates:** configure the current fixed issue-form and pull-request templates, or omit `templates`. Legacy `templates` remains accepted unchanged during the transition and may be used alongside `files`. Arbitrary managed template files are a later module.
+- **Code safety:** propose `codeSafety: { "mode": "ensure" }` in new manifests by default, with a visible opt-out. Existing or omitted legacy configurations remain inactive. The packaged workflow analyzes JS/TS and workflows using a reviewed immutable control baseline; `policy` adds an explicitly reviewed repository checker. See [Code safety](code-safety.md) for scope, cost and trust limits.
 
 ## Planned Modules (Not Available In This Release)
 
@@ -108,7 +110,7 @@ When they ship, `leave` would omit `branchProtection` like the current optional 
 
 ## CI And Security Handoff
 
-Bootstrap owns the governance resources above. When the user wants build, test, or scan pipelines, hand off to the `github-ci-advisor` skill, which proposes and applies only after approval. When untrusted scripts, manifests, workflows, or agent docs need review, hand off to the read-only `repository-security-review` skill, which reports and escalates but applies nothing. Neither handoff is automatic and neither is authority to write workflows or change repository state.
+Bootstrap owns the resources above, including its optional packaged Code safety workflow. Other build, test or scan pipelines go to the `github-ci-advisor` skill, which proposes and applies only after approval. When untrusted scripts, manifests, workflows, or agent docs need review, hand off to the read-only `repository-security-review` skill, which reports and escalates but applies nothing. Neither handoff is automatic and neither is authority to write workflows or change repository state.
 
 ## Boundaries
 

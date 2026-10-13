@@ -2,6 +2,7 @@
   "account": "acme-org",
   "repository": "acme-org/widgets",
   "requiredScopes": ["repo"],
+  "codeSafety": { "mode": "ensure" },
   "labels": {
     "kind:bug": {
       "color": "D73A4A",
