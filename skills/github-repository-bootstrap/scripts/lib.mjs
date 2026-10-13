@@ -2,10 +2,17 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
+import { validateCodeSafetyPolicy } from "./code-safety-renderer.mjs";
 
 const TYPES = new Set(["TEXT", "NUMBER", "DATE", "SINGLE_SELECT"]);
 const LAYOUTS = new Set(["BOARD", "TABLE"]);
 const TEMPLATE_NAMES = new Set(["bug_report", "feature_request"]);
+
+// Native installer-owned destination. Kept in lib so the installer can import
+// one constant without mutation of the pure T1 renderer module.
+export const CODE_SAFETY_DESTINATION = ".github/workflows/code-safety.yml";
+const CODE_SAFETY_SOURCE = "code-safety.yml";
+const LOWER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export const LIMITS = Object.freeze({
   accountLength: 39,
@@ -114,6 +121,7 @@ export function validationErrors(config) {
     "milestones",
     "files",
     "templates",
+    "codeSafety",
     "project",
   ]);
   for (const key of ["account", "repository"]) {
@@ -232,6 +240,9 @@ export function validationErrors(config) {
   const reservedTemplateDestinations = fixedTemplateDestinations(
     config.templates,
   );
+  const reservedCodeSafetyDestinations = codeSafetyActive(config)
+    ? [CODE_SAFETY_DESTINATION]
+    : [];
   if (
     config.files !== undefined &&
     resourceMap(config.files, "$.files", LIMITS.files)
@@ -243,13 +254,21 @@ export function validationErrors(config) {
           "must be a repository-relative path without traversal",
         );
       else {
-        const reserved = reservedTemplateDestinations.find((fixed) =>
+        const templateReserved = reservedTemplateDestinations.find((fixed) =>
           destinationsCollide(destination, fixed),
         );
-        if (reserved)
+        if (templateReserved)
           add(
             `$.files.${destination}`,
-            `must not create an ownership collision with the fixed template destination ${JSON.stringify(reserved)}`,
+            `must not create an ownership collision with the fixed template destination ${JSON.stringify(templateReserved)}`,
+          );
+        const codeSafetyReserved = reservedCodeSafetyDestinations.find(
+          (fixed) => destinationsCollide(destination, fixed),
+        );
+        if (codeSafetyReserved)
+          add(
+            `$.files.${destination}`,
+            `must not create an ownership collision with the managed native destination ${JSON.stringify(codeSafetyReserved)}`,
           );
       }
       if (!object(file, `$.files.${destination}`)) continue;
@@ -341,6 +360,30 @@ export function validationErrors(config) {
       add("$.templates.pullRequest", "must be boolean");
     if (!["ensure", "replace"].includes(config.templates.mode))
       add("$.templates.mode", "must be ensure or replace");
+  }
+
+  if (config.codeSafety !== undefined && config.codeSafety !== false) {
+    if (
+      !config.codeSafety ||
+      Array.isArray(config.codeSafety) ||
+      typeof config.codeSafety !== "object"
+    )
+      add("$.codeSafety", "must be false or an object");
+    else {
+      known(config.codeSafety, "$.codeSafety", ["mode", "policy"]);
+      if (!["ensure", "replace"].includes(config.codeSafety.mode))
+        add("$.codeSafety.mode", "must be ensure or replace");
+      if ("policy" in config.codeSafety) {
+        try {
+          validateCodeSafetyPolicy(config.codeSafety.policy);
+        } catch {
+          add(
+            "$.codeSafety.policy",
+            "must be a valid reviewed code safety policy",
+          );
+        }
+      }
+    }
   }
 
   if (config.project !== undefined && object(config.project, "$.project")) {
@@ -471,6 +514,10 @@ export function normalizeConfig(config) {
     ),
     files: normalizeResourceMap(config.files ?? {}, "destination"),
     templates: config.templates ? { ...config.templates } : null,
+    codeSafety:
+      config.codeSafety && config.codeSafety !== false
+        ? { ...config.codeSafety }
+        : null,
     project: config.project
       ? {
           ...config.project,
@@ -675,6 +722,12 @@ function fixedTemplateDestinations(templates) {
     if (TEMPLATE_NAMES.has(name))
       selected.push(`.github/ISSUE_TEMPLATE/${name}.yml`);
   return fixedTemplatePaths(selected, templates.pullRequest === true);
+}
+
+// A malformed `codeSafety` value fails validation, not this reservation check:
+// only an explicitly selected module (not `false`/absent) reserves its path.
+function codeSafetyActive(config) {
+  return config.codeSafety !== undefined && config.codeSafety !== false;
 }
 
 function isWithin(root, target) {
@@ -1141,6 +1194,47 @@ function sortedByIdentity(resources, identity) {
   });
 }
 
+function isPlainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+// Active code safety fails closed: the plan requires exactly one complete,
+// plain capture record for the native destination before it can decide an
+// action. Absent, malformed, or extra coverage throws instead of guessing.
+function requireCodeSafetyState(observed) {
+  const state = observed.codeSafetyState;
+  if (!Array.isArray(state) || state.length !== 1)
+    throw new Error(
+      "Active code safety requires exactly one observed codeSafetyState record; re-observe before planning",
+    );
+  const [record] = state;
+  if (!isPlainRecord(record))
+    throw new Error(
+      "Active code safety observed record must be a plain object; re-observe before planning",
+    );
+  if (
+    record.source !== CODE_SAFETY_SOURCE ||
+    record.target !== CODE_SAFETY_DESTINATION
+  )
+    throw new Error(
+      "Active code safety observed record must describe the exact source and destination; re-observe before planning",
+    );
+  if (
+    !LOWER_SHA256_PATTERN.test(record.sourceHash) ||
+    !LOWER_SHA256_PATTERN.test(record.renderedHash) ||
+    !(
+      record.destinationHash === null ||
+      LOWER_SHA256_PATTERN.test(record.destinationHash)
+    )
+  )
+    throw new Error(
+      "Active code safety observed record has malformed content hashes; re-observe before planning",
+    );
+  return record;
+}
+
 export function buildPlan(config, observed = {}) {
   const plan = [];
   const labels = new Map(
@@ -1243,6 +1337,25 @@ export function buildPlan(config, observed = {}) {
         templateAction,
         exists ? `template mode is ${config.templates.mode}` : "missing",
       ),
+    );
+  }
+  if (config.codeSafety) {
+    const actual = requireCodeSafetyState(observed);
+    const missing = actual.destinationHash === null;
+    let workflowAction = "create";
+    let reason = "missing";
+    if (!missing && config.codeSafety.mode === "ensure") {
+      workflowAction = "skip";
+      reason = "existing workflow is unmanaged in ensure mode";
+    } else if (!missing && actual.destinationHash === actual.renderedHash) {
+      workflowAction = "skip";
+      reason = "already matches rendered source";
+    } else if (!missing) {
+      workflowAction = "update";
+      reason = "managed replacement differs";
+    }
+    plan.push(
+      action("workflow", CODE_SAFETY_DESTINATION, workflowAction, reason),
     );
   }
   if (!config.project) return plan;
