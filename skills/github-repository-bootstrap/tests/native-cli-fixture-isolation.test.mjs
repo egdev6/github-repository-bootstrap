@@ -82,7 +82,7 @@ test("native CLI gh fixture pins its launcher to CommonJS", () => {
       // The Windows launcher is a compiled bridge to `process.execPath`.
       assert.equal(fs.existsSync(path.join(bin, "gh.exe")), true);
       const launcher = fs.readFileSync(path.join(bin, "gh-launcher.cs"), "utf8");
-      assert.match(launcher, /process\.execPath/);
+      assert.ok(launcher.includes(`psi.FileName = ${JSON.stringify(process.execPath)};`));
       assert.match(launcher, /psi\.UseShellExecute = false/);
       return;
     }
