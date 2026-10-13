@@ -11,7 +11,7 @@ metadata:
 
 ## Activation Contract
 
-Use when the user asks for CI advice, build/test pipeline help, a CI audit or security check, or CI evolution (add, modify, retire). Do not activate automatically during repository bootstrap, and invent no fixed CI manifest or unknown schema fields. It proposes, applies only after explicit approval, and never commits, pushes, releases, deploys, or enables checks or protection.
+Use for CI advice, build/test pipelines, audits, security checks, or CI evolution (add, modify, retire). Do not activate automatically during repository bootstrap, and invent no fixed CI manifest or unknown schema fields. It proposes, applies only after explicit approval, and never commits, pushes, releases, deploys, or enables checks or protection.
 
 ## Hard Rules
 
