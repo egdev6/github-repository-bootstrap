@@ -6,6 +6,7 @@ import {
   authorizationValue,
   buildPlan,
   canonicalJson,
+  CODE_SAFETY_DESTINATION,
   createProjectV2ViewArgs,
   emptyReport,
   normalizeConfig,
@@ -26,6 +27,7 @@ import {
 import { resolveCommand, run } from "./command-transport.mjs";
 import { fixedTemplatePaths } from "./fixed-template-paths.mjs";
 import { captureFixedTemplates, fixedTemplateState, verifyFixedTemplates } from "./fixed-template-state.mjs";
+import { captureCodeSafety, codeSafetyState, verifyCodeSafety } from "./code-safety-state.mjs";
 
 export { resolveCommand, run };
 
@@ -98,6 +100,31 @@ function sourceTemplate(relativePath) {
   return path.join(skillRoot, "assets", "templates", relativePath);
 }
 
+// Active-only preflight of the packaged Code safety asset, before any GitHub
+// call. The asset must be a regular file with no symbolic link in its confined
+// parent chain; the inactive path never reads it.
+function assertCodeSafetySource() {
+  const assets = sourceTemplate("");
+  const source = sourceTemplate("code-safety.yml");
+  if (!fs.lstatSync(source).isFile())
+    throw new Error("Code safety source is not a regular file: code-safety.yml");
+  for (
+    let current = source;
+    current !== path.dirname(assets);
+    current = path.dirname(current)
+  ) {
+    const entry = fs.lstatSync(current);
+    if (entry.isSymbolicLink())
+      throw new Error(
+        "Code safety source contains a symbolic link: code-safety.yml",
+      );
+    if (current !== source && !entry.isDirectory())
+      throw new Error(
+        "Code safety source parent is not a directory: code-safety.yml",
+      );
+  }
+}
+
 function validateLocalTarget(config, repoDir) {
   try {
     if (!fs.statSync(repoDir).isDirectory()) throw new Error("not a directory");
@@ -158,6 +185,15 @@ function configuredTemplateDestinations(config) {
   return fixedTemplatePaths(issueFormDestinations, config.templates.pullRequest);
 }
 
+// Installer-owned destinations that need the same safe-parent preflight: fixed
+// templates plus the optional Code safety workflow when the module is active.
+function configuredNativeDestinations(config) {
+  return [
+    ...configuredTemplateDestinations(config),
+    ...(config.codeSafety ? [CODE_SAFETY_DESTINATION] : []),
+  ];
+}
+
 function localTemplatePaths(config, repoDir) {
   return configuredTemplateDestinations(config).filter((file) =>
     fs.existsSync(path.join(repoDir, file)),
@@ -165,7 +201,7 @@ function localTemplatePaths(config, repoDir) {
 }
 
 export function preflightTemplateDestinations(config, repoDir, mutate) {
-  for (const relativePath of configuredTemplateDestinations(config)) {
+  for (const relativePath of configuredNativeDestinations(config)) {
     const destination = templateDestination(repoDir, relativePath);
     if (destination.exists && !fs.lstatSync(destination.target).isFile())
       throw new Error(`Template destination is not a regular file: ${relativePath}`);
@@ -284,9 +320,13 @@ function discoverFields(project) {
 }
 
 function discover(config, repoDir) {
+  if (config.codeSafety) assertCodeSafetySource();
   requireGh();
   const templateStates = config.templates
     ? fixedTemplateState(captureFixedTemplates(config.templates, repoDir, sourceTemplate("")))
+    : undefined;
+  const codeSafetyStates = config.codeSafety
+    ? codeSafetyState(captureCodeSafety(config, repoDir, sourceTemplate("")))
     : undefined;
   const headerResponse = run("gh", ["api", "-i", "user"]);
   const scopes = parseOAuthScopes(headerResponse);
@@ -351,6 +391,9 @@ function discover(config, repoDir) {
       milestones,
       templates: localTemplatePaths(config, repoDir),
       ...(templateStates === undefined ? {} : { templateStates }),
+      ...(codeSafetyStates === undefined
+        ? {}
+        : { codeSafetyState: codeSafetyStates }),
       files: managedFileStates(config, repoDir),
       project: null,
       fields: [],
@@ -402,6 +445,9 @@ function discover(config, repoDir) {
     milestones,
     templates: localTemplatePaths(config, repoDir),
     ...(templateStates === undefined ? {} : { templateStates }),
+    ...(codeSafetyStates === undefined
+      ? {}
+      : { codeSafetyState: codeSafetyStates }),
     files: managedFileStates(config, repoDir),
     project,
     fields,
@@ -437,6 +483,42 @@ function installTemplates(config, repoDir, report, expected) {
     writeTemplateFile(repoDir, relativeTarget, template.content);
     report.completed.push({
       resource: "template",
+      target: relativeTarget,
+      action: exists ? "update" : "create",
+    });
+  }
+}
+
+function installCodeSafety(config, repoDir, report, expected) {
+  if (!config.codeSafety) return;
+  const records = verifyCodeSafety(
+    config,
+    repoDir,
+    sourceTemplate(""),
+    expected,
+  );
+  for (const record of records) {
+    const relativeTarget = path.normalize(record.target);
+    const { exists } = templateDestination(repoDir, relativeTarget);
+    if (exists && config.codeSafety.mode === "ensure") {
+      report.skipped.push({
+        resource: "workflow",
+        target: relativeTarget,
+        reason: "existing workflow is unmanaged in ensure mode",
+      });
+      continue;
+    }
+    if (exists && record.destinationHash === record.renderedHash) {
+      report.skipped.push({
+        resource: "workflow",
+        target: relativeTarget,
+        reason: "already matches rendered source",
+      });
+      continue;
+    }
+    writeTemplateFile(repoDir, relativeTarget, record.content);
+    report.completed.push({
+      resource: "workflow",
       target: relativeTarget,
       action: exists ? "update" : "create",
     });
@@ -763,6 +845,9 @@ function updateReport(report, args, observed, plan, authorization) {
     milestones: observed.milestones.length,
     templates: observed.templates.length,
     files: observed.files.length,
+    ...(observed.codeSafetyState
+      ? { workflows: observed.codeSafetyState.length }
+      : {}),
     project: observed.project
       ? {
           title: observed.project.title,
@@ -808,11 +893,14 @@ function main() {
       preflightTemplateDestinations(config, target.repoDir, () => {
         if (config.templates)
           verifyFixedTemplates(config.templates, target.repoDir, sourceTemplate(""), observed.templateStates);
+        if (config.codeSafety)
+          verifyCodeSafety(config, target.repoDir, sourceTemplate(""), observed.codeSafetyState);
         installManagedFiles(config, target.repoDir, observed.files, report);
         applyLabels(config, observed, report);
       });
       applyMilestones(config, observed, report);
       installTemplates(config, target.repoDir, report, observed.templateStates);
+      installCodeSafety(config, target.repoDir, report, observed.codeSafetyState);
       if (!config.project) {
         report.success = true;
         printReport(report);
