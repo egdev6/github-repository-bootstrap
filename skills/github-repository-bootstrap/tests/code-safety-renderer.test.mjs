@@ -58,7 +58,7 @@ test("the default render is scanner-only with an inert, empty policy slot", () =
 
 test("renders a reviewed policy as base64 that round-trips across LF and CRLF", () => {
   for (const eol of ["\n", "\r\n"]) {
-    const source = TEMPLATE.replace(/\n/g, eol);
+    const source = TEMPLATE.replace(/\r?\n/g, eol);
     const reviewed = policy({ allowedSymlinks: ['"quoted"', "a\u2028b"] });
     const rendered = renderCodeSafetyWorkflow(source, reviewed);
     assert.equal(rendered.includes(SLOT), false);
@@ -151,33 +151,35 @@ test("encodes hostile policy text as inert base64 and never emits it raw", () =>
 });
 
 test("the rendered workflow keeps the reviewed safety invariants", () => {
-  const rendered = renderCodeSafetyWorkflow(TEMPLATE, policy());
-  for (const needle of [
-    "repository: egdev6/quorb",
-    "176ae636fdd80ce60d6fffec188ce558c5f6692b",
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
-    "python@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d",
-    "persist-credentials: false",
-    "submodules: false",
-    "lfs: false",
-    "permissions:\n  contents: read",
-    "timeout-minutes: 20",
-    "runs-on: ubuntu-24.04",
-    "if: always()",
-    "test \"$(git -C target rev-parse HEAD)\" = \"$TARGET_COMMIT\"",
-  ]) {
-    assert.equal(rendered.includes(needle), true, needle);
-  }
-  for (const forbidden of [
-    /secrets\./,
-    /pull_request_target/,
-    /github\.event\.pull_request/,
-    /\bcache:/,
-    /\bnpm (ci|install|run)\b/,
-    /\bpip install\b/,
-  ]) {
-    assert.equal(forbidden.test(rendered), false, String(forbidden));
+  for (const eol of ["\n", "\r\n"]) {
+    const rendered = renderCodeSafetyWorkflow(TEMPLATE.replace(/\r?\n/g, eol), policy());
+    for (const needle of [
+      "repository: egdev6/quorb",
+      "176ae636fdd80ce60d6fffec188ce558c5f6692b",
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+      "python@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d",
+      "persist-credentials: false",
+      "submodules: false",
+      "lfs: false",
+      "permissions:\n  contents: read",
+      "timeout-minutes: 20",
+      "runs-on: ubuntu-24.04",
+      "if: always()",
+      "test \"$(git -C target rev-parse HEAD)\" = \"$TARGET_COMMIT\"",
+    ]) {
+      assert.equal(rendered.includes(needle.replace(/\n/g, eol)), true, needle);
+    }
+    for (const forbidden of [
+      /secrets\./,
+      /pull_request_target/,
+      /github\.event\.pull_request/,
+      /\bcache:/,
+      /\bnpm (ci|install|run)\b/,
+      /\bpip install\b/,
+    ]) {
+      assert.equal(forbidden.test(rendered), false, String(forbidden));
+    }
   }
 });
 

@@ -96,8 +96,11 @@ test("SKILL.md files stay inside the style-guide token budget", () => {
     ["repository-security-review", secSkill],
     ["github-repository-bootstrap", bootstrapSkill],
   ]) {
-    const estimate = Math.ceil(Buffer.byteLength(text) / 4);
-    assert.ok(estimate <= 1000, `${label} uses ${estimate} estimated tokens`);
+    for (const newline of ["\n", "\r\n"]) {
+      const checkout = text.replace(/\r?\n/g, newline);
+      const estimate = Math.ceil(Buffer.byteLength(checkout) / 4);
+      assert.ok(estimate <= 1000, `${label} uses ${estimate} estimated tokens with ${JSON.stringify(newline)}`);
+    }
   }
 });
 

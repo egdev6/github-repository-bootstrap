@@ -168,7 +168,10 @@ test("active ensure creates the missing workflow under the exact plan authorizat
     );
     assert.equal(readWorkflow(context), renderedAsset(context, undefined));
     assert.equal(fs.statSync(workflowPath(context)).isFile(), true);
-    assert.equal((fs.statSync(workflowPath(context)).mode & 0o022) === 0, true);
+    // Windows stat mode does not expose POSIX group/other write permissions;
+    // this assertion is not an ACL check. All CLI and byte checks run there.
+    if (process.platform !== "win32")
+      assert.equal((fs.statSync(workflowPath(context)).mode & 0o022) === 0, true);
     assertOnlyReadOnlyCalls(context);
   });
 });
