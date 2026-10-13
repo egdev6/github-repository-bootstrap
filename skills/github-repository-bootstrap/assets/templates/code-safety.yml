@@ -1,0 +1,101 @@
+# Code safety workflow asset for github-repository-bootstrap.
+#
+# The renderer replaces the single repository-policy slot below with either the
+# base64 of a caller-reviewed repository policy or an empty string. Empty
+# renders the scanner-only default (Semgrep + zizmor); a policy additionally
+# gates an objective repository-policy check. No policy is ever read from the
+# target repository, the pull request, or a moving reference. This file is inert
+# template data: the renderer is pure and performs no I/O.
+#
+# A pull request can change its own copy of this workflow. Enforced reviews and
+# branch protection are separate repository settings; this asset alone does not
+# certify a repository.
+name: Code safety
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: code-safety-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # Trust anchor: the reviewed egdev6/quorb control commit, never a PR/branch/tag.
+  TRUSTED_BASELINE: 176ae636fdd80ce60d6fffec188ce558c5f6692b
+  TARGET_COMMIT: ${{ github.sha }}
+  # Static slot: base64 of a caller-reviewed policy, or empty for scanner-only.
+  REPOSITORY_POLICY_BASE64: "__REPOSITORY_POLICY_BASE64__"
+jobs:
+  static-review:
+    name: Static code safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Validate immutable baseline and target identifiers
+        shell: bash
+        run: |
+          if [[ ! "$TRUSTED_BASELINE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Invalid trust anchor: expected the reviewed full baseline commit.'
+            exit 2
+          fi
+          [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - name: Fetch reviewed control tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: egdev6/quorb
+          ref: ${{ env.TRUSTED_BASELINE }}
+          path: trusted
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Fetch target as data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.TARGET_COMMIT }}
+          path: target
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Prepare trusted Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Verify target identity
+        shell: bash
+        run: |
+          test "$(git -C target rev-parse HEAD)" = "$TARGET_COMMIT"
+      - name: Materialize reviewed repository policy
+        if: env.REPOSITORY_POLICY_BASE64 != ''
+        shell: bash
+        run: |
+          node -e 'const fs = require("node:fs"); const value = process.env.REPOSITORY_POLICY_BASE64 ?? ""; fs.writeFileSync(process.env.RUNNER_TEMP + "/repository-policy.json", Buffer.from(value, "base64").toString("utf8"), { flag: "wx", mode: 0o600 });'
+      - name: Verify objective repository policy
+        if: env.REPOSITORY_POLICY_BASE64 != ''
+        shell: bash
+        run: |
+          node trusted/scripts/security/check-repository.mjs \
+            --repo "$GITHUB_WORKSPACE/target" \
+            --policy "$RUNNER_TEMP/repository-policy.json"
+      - name: Provision exact verified wheels and runtime
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/quorb-code-safety"
+          node trusted/scripts/security/code-safety.mjs provision "$RUNNER_TEMP/quorb-code-safety/wheels"
+          docker --host unix:///var/run/docker.sock pull --platform linux/amd64 \
+            docker.io/library/python@sha256:2ed6491b93cd49272ee6de2b5a38440c3448360322c089fc23e370722d74179d
+      - name: Analyze inert Git blobs offline
+        shell: bash
+        run: |
+          node trusted/scripts/security/code-safety.mjs scan \
+            "$GITHUB_WORKSPACE/target" "$TARGET_COMMIT" \
+            "$RUNNER_TEMP/quorb-code-safety/wheels" "$RUNNER_TEMP/quorb-code-safety"
+      - name: Remove temporary downloaded tools
+        if: always()
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP/quorb-code-safety"
+# No target package scripts, installs, builds, local actions, login, autofix or
+# uploads; no policy is read from the target repository or the pull request.
+# Findings are advisory. Unknown coverage fails closed. The runner and Node major
+# are platform dependencies, not hermetic pins.
