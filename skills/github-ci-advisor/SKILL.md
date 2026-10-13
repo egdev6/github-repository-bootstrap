@@ -38,7 +38,7 @@ Use when the user asks for CI advice, build/test pipeline help, a CI audit or se
 
 1. Reconcile read-only: stack, commands, workflows, triggers, pins, permissions, and required checks.
 2. Use [CI review](references/ci-review.md) for the growth-advisory table and plan ledger.
-3. Propose a plan that materializes repository-local sources into `.github/workflows` via the existing files map with `ensure` or `replace`, adding no CI fields elsewhere.
+3. Propose custom pipelines via repository-local `files` sources with `ensure` or `replace`; add no CI fields. For packaged Code safety use bootstrap's `codeSafety` module, never overlapping generic files.
 4. Run bootstrap `plan`; request approval of its exact emitted authorization value.
 5. Apply per workflow only after approval; never commit, push, auto-enable checks or protection, or run CD.
 6. Re-plan on any change.

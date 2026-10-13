@@ -6,13 +6,21 @@ Read this before planning or applying. It carries the executor detail that [`SKI
 
 Configure generic repository files through the top-level `files` map: repository-relative destination keys and `source` values, each with explicit `ensure` or `replace`. Preflight sources and destinations under the actual repository root; reject absolute paths, traversal, symbolic links, non-regular files, and unsafe parents. Each entry is planned with its source and destination SHA-256.
 
-The runtime rejects `files`-to-`files` destination conflicts at preflight. Configuration validation additionally rejects a `files` destination that equals, contains, or is contained by a **selected** fixed template destination: `.github/ISSUE_TEMPLATE/config.yml` whenever `templates` is present, each selected issue form, and `.github/pull_request_template.md` only when `pullRequest` is true. The rejection is an error at `$.files.<destination>` and applies to `ensure` and `replace` in both modules; identical bytes never authorize the overlap. The comparison is lexical and host-aware, so it does not resolve symlinks, hard links, or every alias a case-insensitive volume can present. Any overlap that only such an alias would create still needs manual review; a broader general collision guard is not available.
+The runtime rejects `files`-to-`files` destination conflicts at preflight. Configuration validation additionally rejects a `files` destination that equals, contains, or is contained by a **selected** fixed template destination: `.github/ISSUE_TEMPLATE/config.yml` whenever `templates` is present, each selected issue form, and `.github/pull_request_template.md` only when `pullRequest` is true. Active Code safety also reserves `.github/workflows/code-safety.yml`. The rejection is an error at `$.files.<destination>` and applies to `ensure` and `replace` in both modules; identical bytes never authorize the overlap. The comparison is lexical and host-aware, so it does not resolve symlinks, hard links, or every alias a case-insensitive volume can present. Any overlap that only such an alias would create still needs manual review; a broader general collision guard is not available.
 
 ## Fixed Templates
 
 Keep the fixed template set only: `bug_report`, `feature_request`, and the pull-request template. Configure them through `templates`: `issueForms`, `issueFormLabels`, `pullRequest`, and `mode`. `issueFormLabels` must reference labels already declared in `labels`; never add a missing label to satisfy validation. Arbitrary managed template files are out of scope.
 
 Legacy `templates` remains accepted and operates unchanged during this transition; it may be configured alongside `files`.
+
+## Code Safety Workflow
+
+The optional top-level `codeSafety` module owns `.github/workflows/code-safety.yml` as a packaged native asset. New intake manifests propose `{ "mode": "ensure" }`; existing manifests that omit it, or select `false`, remain inactive. No inactive workflow observation or asset read is performed. See [Code safety](code-safety.md) for coverage and trust limits.
+
+Bind raw source, rendered policy and destination hashes to the exact authorized plan. Verify them before any mutation and again immediately before writing the workflow. Drift stops early work or preserves already reported completed operations; it never authorizes rollback or a bypass. `ensure` preserves every existing file; `replace` skips equal bytes and updates differing bytes with the existing confined atomic-write mechanism and permission preservation. Never delete.
+
+The active native workflow reserves its destination against conflicting generic `files` entries, including parent/child path conflicts under the existing host-aware lexical limits. False or omitted selection releases that reservation but never uninstalls an existing workflow. The control baseline is immutable; target policy files and scripts are never trusted or executed. An optional repository policy is explicit static data from the reviewed manifest, not an automatically generated allowlist.
 
 ## Plan And Authorization
 

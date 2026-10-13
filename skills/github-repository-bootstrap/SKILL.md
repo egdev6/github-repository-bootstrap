@@ -17,7 +17,8 @@ Use for repeatable GitHub repository setup, especially when the target already h
 
 - Infer repository, account, stack, and existing governance before asking. Ask only unresolved values open-ended; never invent governance.
 - Reconcile before defining: inventory every activated module read-only, classify each resource, and present per-module decisions from [adaptive intake](references/intake.md). Disabled modules cause no module-specific API calls.
-- Build a reviewed manifest from confirmed facts and decisions. Labels, milestones, files, templates, and Projects v2 are optional; omit a module to leave it out. `managed: false` gates updates but never disables a module.
+- Build a reviewed manifest from confirmed facts and decisions. All modules remain optional; omit a module to leave it out. `managed: false` gates updates but never disables a module.
+- New manifests propose `codeSafety: {"mode":"ensure"}` by default; honor opt-outs and legacy omission. Read [Code safety](references/code-safety.md).
 - Preserve configured resources: discover before every ensure, create missing resources, update only `managed: true` resources or `mode: "replace"` templates, and never delete.
 - The file, template, and reconciliation boundaries in [execution safety](references/execution-safety.md) are mandatory.
 - Run `plan` before mutation; apply only with the exact SHA-256 authorization value from that reviewed plan, and never reuse it after any config, target, discovery, or plan change.
